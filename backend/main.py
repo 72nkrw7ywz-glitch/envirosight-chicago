@@ -59,11 +59,37 @@ ORIGINAL_RISK_KEYS = ["new_risk_s", "new_risk_score", "risk_score", "risk_scor",
 
 
 def initialize_earth_engine() -> tuple[bool, str]:
+    """
+    Initialize Earth Engine. In production (Render), use service account credentials
+    from EE_SERVICE_ACCOUNT_JSON env var. Locally, fall back to user auth.
+    """
     try:
-        ee.Initialize(project=EE_PROJECT)
-        ee.Number(1).getInfo()
-        print("[EE] Earth Engine initialized.")
-        return True, "ok"
+        sa_json = os.environ.get("EE_SERVICE_ACCOUNT_JSON")
+        sa_file = os.environ.get("EE_SERVICE_ACCOUNT_FILE", "service-account.json")
+        if sa_json:
+            # Production: JSON content passed via env var
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(sa_json)
+                temp_path = f.name
+            credentials = ee.ServiceAccountCredentials(None, temp_path)
+            ee.Initialize(credentials, project=EE_PROJECT)
+            ee.Number(1).getInfo()
+            print("[EE] Initialized via service account (env JSON).")
+            return True, "ok (service account)"
+        elif os.path.exists(sa_file):
+            # Local with service account file
+            credentials = ee.ServiceAccountCredentials(None, sa_file)
+            ee.Initialize(credentials, project=EE_PROJECT)
+            ee.Number(1).getInfo()
+            print(f"[EE] Initialized via service account file: {sa_file}")
+            return True, "ok (service account file)"
+        else:
+            # Local with user auth
+            ee.Initialize(project=EE_PROJECT)
+            ee.Number(1).getInfo()
+            print("[EE] Initialized via user auth.")
+            return True, "ok (user auth)"
     except ee.EEException as error:
         msg = str(error)
         if "not authenticated" in msg.lower() or "credentials" in msg.lower():

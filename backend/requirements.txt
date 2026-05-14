@@ -1,4 +1,4 @@
-fastapi
-uvicorn
-python-dotenv
-earthengine-api
+﻿fastapi==0.115.0
+uvicorn[standard]==0.30.6
+earthengine-api==0.1.408
+google-auth==2.29.0
