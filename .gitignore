@@ -1,0 +1,34 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.so
+.env
+env/
+venv/
+
+# Node
+node_modules/
+.expo/
+.expo-shared/
+dist/
+web-build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Earth Engine credentials
+ee-private-key.json
+service-account.json
+
+# Raw data files (too large for GitHub)
+data/raw/
+data/pipeline_output/
