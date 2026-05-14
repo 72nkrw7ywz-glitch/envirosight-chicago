@@ -44,7 +44,7 @@ const RISK_COLORS = {
   high: "#fb8c00", veryHigh: "#c62828",
 };
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "https://envirosight-chicago.onrender.com";
 
 const METRIC_LABELS: Record<ColorByMetric, string> = {
   risk: "Environmental Risk",
