@@ -9,7 +9,7 @@ import ee
 import urllib.request
 import urllib.parse
 
-app = FastAPI(title="EnviroSight Chicago API", version="1.4.0")
+app = FastAPI(title="EnviroSight Chicago API", version="1.5.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,6 +55,20 @@ BACKUP_GEOJSON_PATH = (
 )
 
 ORIGINAL_RISK_KEYS = ["new_risk_s", "new_risk_score", "risk_score", "risk_scor", "new_risk", "risk"]
+
+CHICAGO_SUPERFUND_SITES = [
+    {"id": "ILN000509241", "name": "ACME STEEL COKE PLANT", "zip": "60617", "status": "Final NPL", "latitude": 41.7195, "longitude": -87.5855},
+    {"id": "ILD000716852", "name": "LAKE CALUMET CLUSTER", "zip": "60633", "status": "Final NPL", "latitude": 41.6892, "longitude": -87.5321},
+    {"id": "ILN000510192", "name": "PEOPLES GAS CRAWFORD STATION FORMER MGP", "zip": "60623", "status": "Non-NPL", "latitude": 41.8534, "longitude": -87.7154},
+    {"id": "ILD982074767", "name": "PEOPLES GAS LIGHT & COKE - 22ND ST", "zip": "60608", "status": "Non-NPL", "latitude": 41.8478, "longitude": -87.6553},
+    {"id": "ILD982074783", "name": "PEOPLES GAS LIGHT & COKE - DIVISION ST", "zip": "60642", "status": "Non-NPL", "latitude": 41.9031, "longitude": -87.6553},
+    {"id": "ILD982074775", "name": "PEOPLES GAS LIGHT & COKE NORTH STA", "zip": "60610", "status": "Non-NPL", "latitude": 41.8985, "longitude": -87.6359},
+    {"id": "ILD982074759", "name": "PEOPLES GAS LIGHT & COKE WILLOW ST STATION", "zip": "60614", "status": "Non-NPL", "latitude": 41.9214, "longitude": -87.6512},
+    {"id": "ILN000510193", "name": "PEOPLES GAS NORTH SHORE AVENUE STATION FORMER MGP", "zip": "60645", "status": "Non-NPL", "latitude": 41.9998, "longitude": -87.6721},
+    {"id": "ILN000510191", "name": "PEOPLES GAS SOUTH STATION FORMER MGP", "zip": "60608", "status": "Non-NPL", "latitude": 41.8456, "longitude": -87.6489},
+    {"id": "ILN000510194", "name": "PEOPLES GAS THROOP STREET FORMER MGP", "zip": "60608", "status": "Non-NPL", "latitude": 41.8501, "longitude": -87.6578},
+    {"id": "ILN000505540", "name": "SCHROUD PROPERTY", "zip": "60633", "status": "Final NPL", "latitude": 41.6823, "longitude": -87.5298},
+]
 
 
 def initialize_earth_engine() -> tuple[bool, str]:
@@ -124,7 +138,7 @@ def get_number(properties: dict, possible_keys: list[str], default: float = 0.0)
 
 
 def http_get_json(url: str, timeout: int = 30):
-    req = urllib.request.Request(url, headers={"User-Agent": "EnviroSight-Chicago/1.4"})
+    req = urllib.request.Request(url, headers={"User-Agent": "EnviroSight-Chicago/1.5"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -579,14 +593,14 @@ def fetch_weather():
 @app.get("/")
 def home():
     return {
-        "message": "EnviroSight Chicago API", "version": "1.4.0",
+        "message": "EnviroSight Chicago API", "version": "1.5.0",
         "endpoints": [
             "/health", "/retry-init", "/refresh-cache",
             "/risk-scores", "/risk-scores/{community_area}",
             "/api/current-risk-map",
             "/api/airnow-summary", "/api/airnow-stations",
-            "/api/tri-facilities", "/api/public-health",
-            "/api/weather",
+            "/api/tri-facilities", "/api/superfund-sites",
+            "/api/public-health", "/api/weather",
         ],
     }
 
@@ -711,6 +725,16 @@ def tri_facilities():
         return result
     except Exception as error:
         return {"available": False, "message": str(error), "facilities": []}
+
+
+@app.get("/api/superfund-sites")
+def superfund_sites():
+    return {
+        "available": True,
+        "site_count": len(CHICAGO_SUPERFUND_SITES),
+        "sites": CHICAGO_SUPERFUND_SITES,
+        "source": "EPA Superfund National Priorities List",
+    }
 
 
 @app.get("/api/public-health")
