@@ -23,6 +23,9 @@ type TriFacility = {
   id: string; name: string; address: string; city: string; zip: string;
   industry: string; latitude: number; longitude: number;
 };
+type SuperfundSite = {
+  id: string; name: string; zip: string; status: string; latitude: number; longitude: number;
+};
 type Pin = { lat: number; lng: number; label: string };
 
 type WeatherCondition = { code: number; label: string; emoji: string };
@@ -118,10 +121,12 @@ export default function HomeScreen() {
   const [airnowStations, setAirnowStations] = useState<AirNowStation[]>([]);
   const [airnowSummary, setAirnowSummary] = useState<AirNowSummary | null>(null);
   const [triFacilities, setTriFacilities] = useState<TriFacility[]>([]);
+  const [superfundSites, setSuperfundSites] = useState<SuperfundSite[]>([]);
   const [weather, setWeather] = useState<WeatherData | null>(null);
 
   const [showAirnow, setShowAirnow] = useState(true);
   const [showTri, setShowTri] = useState(true);
+  const [showSuperfund, setShowSuperfund] = useState(true);
   const [colorBy, setColorBy] = useState<ColorByMetric>("risk");
   const [basemap, setBasemap] = useState<BasemapType>("street");
 
@@ -175,14 +180,13 @@ export default function HomeScreen() {
 
   useEffect(() => {
     (async function loadExtras() {
-      // Wake up Render first (free tier spins down after inactivity)
       try { await fetch(`${API_BASE}/health`); } catch {}
-      // Now fetch actual data with longer timeout for TRI
       try {
-        const [s, sum, tri, w] = await Promise.all([
+        const [s, sum, tri, sf, w] = await Promise.all([
           fetch(`${API_BASE}/api/airnow-stations`),
           fetch(`${API_BASE}/api/airnow-summary`),
           fetch(`${API_BASE}/api/tri-facilities`, { signal: AbortSignal.timeout(60000) }),
+          fetch(`${API_BASE}/api/superfund-sites`),
           fetch(`${API_BASE}/api/weather`),
         ]);
         if (s.ok) {
@@ -193,6 +197,10 @@ export default function HomeScreen() {
         if (tri.ok) {
           const d = await tri.json();
           if (d.available && Array.isArray(d.facilities)) setTriFacilities(d.facilities);
+        }
+        if (sf.ok) {
+          const d = await sf.json();
+          if (d.available && Array.isArray(d.sites)) setSuperfundSites(d.sites);
         }
         if (w.ok) {
           const wd = await w.json();
@@ -357,8 +365,6 @@ export default function HomeScreen() {
 
   const totalAreas = ranked.length;
   const avgRisk = totalAreas > 0 ? ranked.reduce((s, i) => s + getDisplayRiskScore(i), 0) / totalAreas : 0;
-  const highest = ranked[0];
-  const highRiskCount = ranked.filter((i) => getRiskLevel(getDisplayRiskScore(i)) === "High Risk").length;
 
   const medianPoverty = useMemo(() => {
     const vals = ranked.map(getPoverty).filter(Number.isFinite).sort((a, b) => a - b);
@@ -399,6 +405,7 @@ export default function HomeScreen() {
       .station-popup .aqi-big { font-size: 32px; font-weight: 900; line-height: 1; }
       .station-popup .param-row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 12px; border-bottom: 1px solid #eee; }
       .tri-icon { background: #6b2e8c; color: white; border: 2px solid white; border-radius: 4px; font-size: 10px; font-weight: 900; width: 22px !important; height: 22px !important; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+      .superfund-icon { background: #c62828; color: white; border: 2px solid white; border-radius: 50%; font-size: 10px; font-weight: 900; width: 22px !important; height: 22px !important; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
       .my-pin { width: 28px; height: 38px; background: transparent; }
       .my-pin svg { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); }
     </style></head><body><div id="map"></div>
@@ -406,6 +413,7 @@ export default function HomeScreen() {
       const geoData = ${JSON.stringify(geoData)};
       const stations = ${JSON.stringify(showAirnow ? airnowStations : [])};
       const triFacilities = ${JSON.stringify(showTri ? triFacilities : [])};
+      const superfundSites = ${JSON.stringify(showSuperfund ? superfundSites : [])};
       const quintiles = ${JSON.stringify(quintiles)};
       const COLORS = ${JSON.stringify(RISK_COLORS)};
       const colorBy = ${JSON.stringify(colorBy)};
@@ -508,6 +516,15 @@ export default function HomeScreen() {
         );
       });
 
+      superfundSites.forEach(function(s) {
+        const icon = L.divIcon({ className: "superfund-icon", html: "☢", iconSize: [22, 22], iconAnchor: [11, 11] });
+        L.marker([s.latitude, s.longitude], { icon: icon }).addTo(map).bindPopup(
+          "<strong>" + s.name + "</strong><br/>" +
+          "<div style='color:#c62828; font-size:11px; font-weight:800; margin-top:2px'>EPA Superfund Site</div>" +
+          "<div style='margin-top:8px; font-size:13px'>Status: <strong>" + s.status + "</strong><br/>ZIP: " + s.zip + "</div>"
+        );
+      });
+
       if (pin) {
         const pinSvg = '<svg width="28" height="38" viewBox="0 0 28 38" xmlns="http://www.w3.org/2000/svg">' +
           '<path d="M14 0 C6 0 0 6 0 14 C0 23 14 38 14 38 C14 38 28 23 28 14 C28 6 22 0 14 0 Z" fill="#075f43"/>' +
@@ -535,7 +552,10 @@ export default function HomeScreen() {
             "<span class='legend-box' style='background:#ff7e00'></span> Unhealthy SG</div>";
         }
         if (triFacilities.length > 0) {
-          html += "<div class='legend-section'><span style='display:inline-block; background:#6b2e8c; color:white; padding:2px 5px; font-size:9px; border-radius:3px; margin-right:5px; font-weight:900'>TRI</span> Toxic-release</div>";
+          html += "<div class='legend-section'><span style='display:inline-block; background:#6b2e8c; color:white; padding:2px 5px; font-size:9px; border-radius:3px; margin-right:5px; font-weight:900'>TRI</span> Toxic-release facility</div>";
+        }
+        if (superfundSites.length > 0) {
+          html += "<div class='legend-section'><span style='display:inline-block; background:#c62828; color:white; padding:2px 5px; font-size:9px; border-radius:50%; margin-right:5px; font-weight:900'>☢</span> Superfund site</div>";
         }
         div.innerHTML = html;
         return div;
@@ -570,7 +590,7 @@ export default function HomeScreen() {
         <Text style={styles.subtitle}>Environmental Risk + Health + Equity</Text>
         <Text style={styles.description}>
           Find your address's environmental risk. Satellite data, EPA ground sensors, toxic-release facilities,
-          public health statistics, and live weather across all 77 Chicago community areas.
+          Superfund sites, public health statistics, and live weather across all 77 Chicago community areas.
         </Text>
       </View>
 
@@ -676,6 +696,7 @@ export default function HomeScreen() {
         <KpiCard title="Avg Risk Score" value={avgRisk.toFixed(1)} accent="#075f43" />
         <KpiCard title="Median Poverty" value={medianPoverty !== null ? `${medianPoverty.toFixed(1)}%` : "—"} accent="#fb8c00" />
         <KpiCard title="TRI Facilities" value={triFacilities.length.toString()} accent="#6b2e8c" />
+        <KpiCard title="Superfund Sites" value={superfundSites.length.toString()} accent="#c62828" />
       </View>
 
       <View style={styles.card}>
@@ -813,6 +834,11 @@ export default function HomeScreen() {
                 <Text style={[styles.toggleButtonText, showTri && styles.toggleButtonTextActive]}>TRI ({triFacilities.length})</Text>
               </Pressable>
             )}
+            {superfundSites.length > 0 && (
+              <Pressable onPress={() => setShowSuperfund(!showSuperfund)} style={[styles.toggleButton, showSuperfund && styles.toggleButtonActiveSuperfund]}>
+                <Text style={[styles.toggleButtonText, showSuperfund && styles.toggleButtonTextActive]}>☢ Superfund ({superfundSites.length})</Text>
+              </Pressable>
+            )}
           </View>
         </View>
         <Text style={styles.metricLabel}>COLOR MAP BY:</Text>
@@ -858,6 +884,22 @@ export default function HomeScreen() {
           );
         })}
       </View>
+
+      {superfundSites.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>☢ Superfund Sites ({superfundSites.length})</Text>
+          <Text style={styles.bodyText}>EPA-designated contaminated sites requiring cleanup in Chicago.</Text>
+          {superfundSites.map((s) => (
+            <View key={s.id} style={styles.superfundRow}>
+              <View style={[styles.superfundDot, { backgroundColor: s.status === "Final NPL" ? "#c62828" : "#fb8c00" }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.superfundName}>{s.name}</Text>
+                <Text style={styles.superfundStatus}>{s.status} · ZIP {s.zip}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
 
       <View style={styles.card}>
         <View style={styles.compareHeader}>
@@ -926,6 +968,7 @@ export default function HomeScreen() {
             <DataSource title="Sentinel-2/5P, Landsat 8, MERRA-2" detail="Satellite via Google Earth Engine" />
             <DataSource title="EPA AirNow" detail="Hourly ground sensors" />
             <DataSource title="EPA Toxic Release Inventory" detail="Facility-level chemical reporting" />
+            <DataSource title="EPA Superfund NPL" detail="Contaminated sites requiring federal cleanup" />
             <DataSource title="Chicago Public Health Statistics" detail="data.cityofchicago.org (iqnk-2tcu)" />
             <DataSource title="Open-Meteo" detail="Weather + forecast (free, no API key)" />
             <DataSource title="Esri World Imagery" detail="Satellite basemap" />
@@ -1072,7 +1115,7 @@ const styles = StyleSheet.create({
   aqiParamValue: { fontSize: 14, fontWeight: "800", color: "#111827" },
   aqiTimestamp: { fontSize: 11, color: "#9ca3af", marginTop: 10, fontStyle: "italic" },
   kpiGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, margin: 20 },
-  kpiCard: { flexGrow: 1, flexBasis: 160, backgroundColor: "white", padding: 18, borderRadius: 16, borderWidth: 1, borderColor: "#e5e7eb" },
+  kpiCard: { flexGrow: 1, flexBasis: 140, backgroundColor: "white", padding: 18, borderRadius: 16, borderWidth: 1, borderColor: "#e5e7eb" },
   kpiTitle: { fontSize: 12, color: "#6b7280", fontWeight: "700", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 },
   kpiValue: { fontSize: 22, fontWeight: "900" },
   addressInputRow: { flexDirection: "row", gap: 10, marginTop: 12 },
@@ -1120,11 +1163,16 @@ const styles = StyleSheet.create({
   chartBarContainer: { flex: 1, height: 24, backgroundColor: "#f3f4f6", borderRadius: 6, overflow: "hidden", justifyContent: "center", position: "relative" },
   chartBar: { position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 6 },
   chartScore: { position: "absolute", right: 8, fontWeight: "900", color: "#111827", fontSize: 12 },
+  superfundRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
+  superfundDot: { width: 10, height: 10, borderRadius: 5, flexShrink: 0 },
+  superfundName: { fontWeight: "700", color: "#111827", fontSize: 13 },
+  superfundStatus: { color: "#6b7280", fontSize: 12, marginTop: 2 },
   compareHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   toggleGroup: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   toggleButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: "#075f43", backgroundColor: "white" },
   toggleButtonActive: { backgroundColor: "#075f43", borderColor: "#075f43" },
   toggleButtonActiveTri: { backgroundColor: "#6b2e8c", borderColor: "#6b2e8c" },
+  toggleButtonActiveSuperfund: { backgroundColor: "#c62828", borderColor: "#c62828" },
   toggleButtonText: { color: "#075f43", fontWeight: "800", fontSize: 12 },
   toggleButtonTextActive: { color: "white" },
   toggleButtonSmall: { backgroundColor: "#075f43", paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999 },
