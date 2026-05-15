@@ -54,7 +54,6 @@ const METRIC_LABELS: Record<ColorByMetric, string> = {
   ses_vulnerability: "Socioeconomic Vulnerability",
 };
 
-// Compass direction from degrees
 function windDirectionLabel(deg: number): string {
   if (!Number.isFinite(deg)) return "—";
   const dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
@@ -77,7 +76,6 @@ function shortDayName(dateStr: string): string {
   } catch { return "—"; }
 }
 
-// Point-in-polygon
 function pointInRing(point: [number, number], ring: number[][]): boolean {
   const [x, y] = point;
   let inside = false;
@@ -177,11 +175,14 @@ export default function HomeScreen() {
 
   useEffect(() => {
     (async function loadExtras() {
+      // Wake up Render first (free tier spins down after inactivity)
+      try { await fetch(`${API_BASE}/health`); } catch {}
+      // Now fetch actual data with longer timeout for TRI
       try {
         const [s, sum, tri, w] = await Promise.all([
           fetch(`${API_BASE}/api/airnow-stations`),
           fetch(`${API_BASE}/api/airnow-summary`),
-          fetch(`${API_BASE}/api/tri-facilities`),
+          fetch(`${API_BASE}/api/tri-facilities`, { signal: AbortSignal.timeout(60000) }),
           fetch(`${API_BASE}/api/weather`),
         ]);
         if (s.ok) {
@@ -544,44 +545,19 @@ export default function HomeScreen() {
   ` : "";
 
   const statusColor = dataStatus === "live" ? "#2e7d32" : dataStatus === "backup" ? "#f59e0b" : dataStatus === "error" ? "#c62828" : "#6b7280";
-
-  // Weather card background tint based on temperature/conditions
   const weatherBg = weather?.current?.is_day === false ? "#0f172a" : "#075f43";
 
-  // Meteocons: photorealistic, animated SVG weather icons (free, MIT licensed)
-  // Bas Milius — https://bas.dev/work/meteocons
   const meteoconUrl = (code: number, isDay: boolean = true): string => {
     const base = "https://cdn.jsdelivr.net/gh/basmilius/weather-icons/production/fill/all";
     const dn = isDay ? "day" : "night";
     const map: Record<number, string> = {
-      0: `clear-${dn}`,
-      1: `clear-${dn}`,
-      2: `partly-cloudy-${dn}`,
-      3: `overcast-${dn}`,
-      45: `fog-${dn}`,
-      48: `fog-${dn}`,
-      51: "drizzle",
-      53: "drizzle",
-      55: "drizzle",
-      56: "sleet",
-      57: "sleet",
-      61: "rain",
-      63: "rain",
-      65: "rain",
-      66: "sleet",
-      67: "sleet",
-      71: "snow",
-      73: "snow",
-      75: "snow",
-      77: "snow",
-      80: `partly-cloudy-${dn}-rain`,
-      81: "rain",
-      82: "thunderstorms-rain",
-      85: `partly-cloudy-${dn}-snow`,
-      86: "snow",
-      95: "thunderstorms",
-      96: "thunderstorms-rain",
-      99: "thunderstorms-rain",
+      0: `clear-${dn}`, 1: `clear-${dn}`, 2: `partly-cloudy-${dn}`, 3: `overcast-${dn}`,
+      45: `fog-${dn}`, 48: `fog-${dn}`, 51: "drizzle", 53: "drizzle", 55: "drizzle",
+      56: "sleet", 57: "sleet", 61: "rain", 63: "rain", 65: "rain", 66: "sleet", 67: "sleet",
+      71: "snow", 73: "snow", 75: "snow", 77: "snow",
+      80: `partly-cloudy-${dn}-rain`, 81: "rain", 82: "thunderstorms-rain",
+      85: `partly-cloudy-${dn}-snow`, 86: "snow",
+      95: "thunderstorms", 96: "thunderstorms-rain", 99: "thunderstorms-rain",
     };
     const icon = map[code] ?? `clear-${dn}`;
     return `${base}/${icon}.svg`;
@@ -613,14 +589,12 @@ export default function HomeScreen() {
         </Text>
       </View>
 
-      {/* WEATHER CARD */}
       {weather?.available && weather.current && (
         <View style={[styles.weatherCard, { backgroundColor: weatherBg }]}>
           <View style={styles.weatherHeaderRow}>
             <Text style={styles.weatherLocation}>{weather.location || "Chicago, IL"}</Text>
             <Text style={styles.weatherSource}>Open-Meteo · Updates every 10 min</Text>
           </View>
-
           <View style={styles.weatherMainRow}>
             {Platform.OS === "web"
               ? React.createElement("img", {
@@ -633,25 +607,15 @@ export default function HomeScreen() {
             <View style={styles.weatherMainText}>
               <Text style={styles.weatherTemp}>{Math.round(weather.current.temperature_f)}°F</Text>
               <Text style={styles.weatherCondition}>{weather.current.weather.label}</Text>
-              <Text style={styles.weatherFeels}>
-                Feels like {Math.round(weather.current.feels_like_f)}°F
-              </Text>
+              <Text style={styles.weatherFeels}>Feels like {Math.round(weather.current.feels_like_f)}°F</Text>
             </View>
           </View>
-
           <View style={styles.weatherStatsRow}>
             <WeatherStat label="Humidity" value={`${weather.current.humidity_pct}%`} />
-            <WeatherStat
-              label="Wind"
-              value={`${Math.round(weather.current.wind_speed_mph)} mph ${windDirectionLabel(weather.current.wind_direction_deg)}`}
-            />
+            <WeatherStat label="Wind" value={`${Math.round(weather.current.wind_speed_mph)} mph ${windDirectionLabel(weather.current.wind_direction_deg)}`} />
             <WeatherStat label="UV Index" value={weather.current.uv_index?.toFixed(1) || "—"} />
-            <WeatherStat
-              label="Precip"
-              value={`${weather.current.precipitation_in?.toFixed(2) || "0.00"}″`}
-            />
+            <WeatherStat label="Precip" value={`${weather.current.precipitation_in?.toFixed(2) || "0.00"}″`} />
           </View>
-
           {weather.daily && weather.daily.length > 0 && (
             <>
               <Text style={styles.weatherForecastLabel}>7-DAY FORECAST</Text>
@@ -675,7 +639,6 @@ export default function HomeScreen() {
                   </View>
                 ))}
               </ScrollView>
-
               {weather.daily[0]?.sunrise && (
                 <View style={styles.sunRow}>
                   <Text style={styles.sunText}>🌅 Sunrise {formatHour(weather.daily[0].sunrise)}</Text>
@@ -744,9 +707,7 @@ export default function HomeScreen() {
             </Pressable>
           )}
         </View>
-
         {geocodeError && <Text style={styles.errorText}>{geocodeError}</Text>}
-
         {pin && pinMatchedFeature && (
           <View style={styles.pinResult}>
             <Text style={styles.pinResultLabel}>📍 {pin.label}</Text>
@@ -768,7 +729,6 @@ export default function HomeScreen() {
             </View>
           </View>
         )}
-
         {pin && !pinMatchedFeature && (
           <View style={styles.pinResult}>
             <Text style={styles.pinResultLabel}>📍 {pin.label}</Text>
@@ -796,16 +756,13 @@ export default function HomeScreen() {
               <Text style={styles.riskPillText}>{getRiskLevel(getDisplayRiskScore(selected))}</Text>
             </View>
           </View>
-
           <View style={styles.explainBox}>
             <Text style={styles.explainText}>{explain(selected)}</Text>
           </View>
-
           <Text style={styles.sectionTitle}>Environmental Indicators</Text>
           <ScoreBar label="Satellite Air Pollution" value={getSatelliteAirPollutionScore(selected)} />
           <ScoreBar label="Heat Exposure" value={getHeatRisk(selected)} />
           <ScoreBar label="Green Space Risk" value={getGreenRisk(selected)} />
-
           <Text style={styles.sectionTitle}>Health & Socioeconomic</Text>
           {Number.isFinite(getPoverty(selected)) ? (
             <>
@@ -823,7 +780,6 @@ export default function HomeScreen() {
           ) : (
             <Text style={styles.bodyText}>No public health data matched for this area.</Text>
           )}
-
           <Text style={styles.sectionTitle}>Pollutant Breakdown</Text>
           <ScoreBar label="NO₂" value={toNumber(getValue(selected, ["no2_pollution_score"], 0))} />
           <ScoreBar label="PM2.5 Proxy (AOD)" value={toNumber(getValue(selected, ["pm25_proxy_pollution_score"], 0))} />
@@ -859,7 +815,6 @@ export default function HomeScreen() {
             )}
           </View>
         </View>
-
         <Text style={styles.metricLabel}>COLOR MAP BY:</Text>
         <View style={styles.colorByRow}>
           {(["risk", "poverty", "income", "unemployment", "ses_vulnerability"] as ColorByMetric[]).map((m) => (
@@ -868,7 +823,6 @@ export default function HomeScreen() {
             </Pressable>
           ))}
         </View>
-
         <Text style={styles.bodyText}>
           {colorBy === "risk" && "Environmental risk choropleth. Switch to Poverty to see environmental justice patterns."}
           {colorBy === "poverty" && "Darker areas = higher poverty rate."}
@@ -876,7 +830,6 @@ export default function HomeScreen() {
           {colorBy === "unemployment" && "Darker areas = higher unemployment."}
           {colorBy === "ses_vulnerability" && "Composite vulnerability index."}
         </Text>
-
         {Platform.OS === "web" && geoData ? (
           React.createElement("iframe", {
             srcDoc: mapHtml,
@@ -1079,14 +1032,11 @@ const styles = StyleSheet.create({
   title: { color: "white", fontSize: 38, fontWeight: "800", marginBottom: 8, letterSpacing: -0.5 },
   subtitle: { color: "#a7f3d0", fontSize: 18, fontWeight: "600", marginBottom: 12 },
   description: { color: "rgba(255,255,255,0.92)", fontSize: 15, lineHeight: 22 },
-
   liveBanner: { backgroundColor: "white", margin: 20, marginBottom: 0, padding: 16, borderRadius: 14, borderLeftWidth: 4 },
   liveBannerRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
   statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
   liveBannerTitle: { fontSize: 15, fontWeight: "800", color: "#111827" },
   liveBannerSubtext: { fontSize: 13, color: "#6b7280", marginLeft: 20 },
-
-  // Weather card
   weatherCard: { marginHorizontal: 20, marginTop: 12, padding: 22, borderRadius: 18 },
   weatherHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
   weatherLocation: { color: "white", fontSize: 14, fontWeight: "800", letterSpacing: 0.5 },
@@ -1111,7 +1061,6 @@ const styles = StyleSheet.create({
   forecastPrecip: { color: "#7dd3fc", fontSize: 10, fontWeight: "700", marginTop: 4 },
   sunRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.2)" },
   sunText: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "600" },
-
   aqiBanner: { backgroundColor: "white", marginHorizontal: 20, marginTop: 12, padding: 18, borderRadius: 14, borderLeftWidth: 4 },
   aqiHeader: { flexDirection: "row", alignItems: "flex-start", gap: 20 },
   aqiLabel: { fontSize: 11, fontWeight: "800", color: "#6b7280", letterSpacing: 0.5, marginBottom: 4 },
@@ -1122,12 +1071,10 @@ const styles = StyleSheet.create({
   aqiParamName: { fontSize: 12, color: "#6b7280", fontWeight: "600" },
   aqiParamValue: { fontSize: 14, fontWeight: "800", color: "#111827" },
   aqiTimestamp: { fontSize: 11, color: "#9ca3af", marginTop: 10, fontStyle: "italic" },
-
   kpiGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, margin: 20 },
   kpiCard: { flexGrow: 1, flexBasis: 160, backgroundColor: "white", padding: 18, borderRadius: 16, borderWidth: 1, borderColor: "#e5e7eb" },
   kpiTitle: { fontSize: 12, color: "#6b7280", fontWeight: "700", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 },
   kpiValue: { fontSize: 22, fontWeight: "900" },
-
   addressInputRow: { flexDirection: "row", gap: 10, marginTop: 12 },
   addressInput: { flex: 1, padding: 14, borderWidth: 1.5, borderColor: "#d1d5db", borderRadius: 12, backgroundColor: "white", fontSize: 16 },
   addressSearchButton: { backgroundColor: "#075f43", paddingHorizontal: 22, justifyContent: "center", borderRadius: 12, minWidth: 90, alignItems: "center" },
@@ -1138,7 +1085,6 @@ const styles = StyleSheet.create({
   clearButton: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999, backgroundColor: "#f3f4f6" },
   clearButtonText: { color: "#6b7280", fontWeight: "700", fontSize: 13 },
   errorText: { color: "#c62828", fontSize: 13, marginTop: 10, fontWeight: "600" },
-
   pinResult: { marginTop: 16, padding: 16, backgroundColor: "#f7fbf8", borderRadius: 12, borderLeftWidth: 3, borderLeftColor: "#075f43" },
   pinResultLabel: { fontSize: 13, color: "#6b7280", fontWeight: "700", marginBottom: 4 },
   pinResultName: { fontSize: 22, fontWeight: "900", color: "#075f43", marginBottom: 8 },
@@ -1146,43 +1092,34 @@ const styles = StyleSheet.create({
   quickStat: { backgroundColor: "white", padding: 10, borderRadius: 10, flexGrow: 1, flexBasis: 100, borderWidth: 1, borderColor: "#e5e7eb" },
   quickStatLabel: { fontSize: 10, color: "#6b7280", fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 },
   quickStatValue: { fontSize: 16, fontWeight: "900", color: "#111827" },
-
   search: { marginHorizontal: 20, marginBottom: 20, padding: 14, borderWidth: 1.5, borderColor: "#075f43", borderRadius: 12, backgroundColor: "white", fontSize: 16 },
-
   card: { backgroundColor: "white", marginHorizontal: 20, marginBottom: 20, padding: 22, borderRadius: 18, borderWidth: 1, borderColor: "#e5e7eb" },
   mapCard: { backgroundColor: "white", marginHorizontal: 20, marginBottom: 20, padding: 22, borderRadius: 18, borderWidth: 1, borderColor: "#e5e7eb", overflow: "hidden" },
   mapHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 12 },
   cardTitle: { fontSize: 22, fontWeight: "800", color: "#075f43", marginBottom: 12 },
   sectionTitle: { fontSize: 14, fontWeight: "800", color: "#075f43", marginTop: 18, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 },
   bodyText: { fontSize: 14, lineHeight: 22, color: "#374151", marginBottom: 8 },
-
   metricLabel: { fontSize: 11, fontWeight: "800", color: "#6b7280", letterSpacing: 0.5, marginBottom: 8, marginTop: 4 },
   colorByRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
   colorByButton: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: "#d1d5db", backgroundColor: "white" },
   colorByButtonActive: { backgroundColor: "#075f43", borderColor: "#075f43" },
   colorByButtonText: { color: "#374151", fontWeight: "700", fontSize: 12 },
   colorByButtonTextActive: { color: "white" },
-
   basemapToggle: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, backgroundColor: "#111827" },
   basemapToggleText: { color: "white", fontWeight: "800", fontSize: 13 },
-
   scoreRow: { flexDirection: "row", alignItems: "center", gap: 16, marginBottom: 12 },
   bigScore: { fontSize: 48, fontWeight: "900", lineHeight: 52 },
   riskPill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999 },
   riskPillText: { color: "white", fontWeight: "800", fontSize: 13 },
-
   explainBox: { backgroundColor: "#f7fbf8", borderLeftWidth: 3, borderLeftColor: "#075f43", padding: 14, borderRadius: 10, marginBottom: 8 },
   explainText: { fontSize: 14, lineHeight: 22, color: "#374151" },
-
   formula: { fontSize: 14, fontWeight: "700", color: "#075f43", backgroundColor: "#eef8f2", padding: 14, borderRadius: 12, marginBottom: 12, lineHeight: 22 },
-
   chartRow: { flexDirection: "row", alignItems: "center", marginTop: 8, gap: 8 },
   chartRank: { width: 30, fontWeight: "800", color: "#9ca3af", fontSize: 13 },
   chartName: { width: 140, fontWeight: "700", color: "#111827", fontSize: 13 },
   chartBarContainer: { flex: 1, height: 24, backgroundColor: "#f3f4f6", borderRadius: 6, overflow: "hidden", justifyContent: "center", position: "relative" },
   chartBar: { position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 6 },
   chartScore: { position: "absolute", right: 8, fontWeight: "900", color: "#111827", fontSize: 12 },
-
   compareHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   toggleGroup: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   toggleButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: "#075f43", backgroundColor: "white" },
@@ -1190,10 +1127,8 @@ const styles = StyleSheet.create({
   toggleButtonActiveTri: { backgroundColor: "#6b2e8c", borderColor: "#6b2e8c" },
   toggleButtonText: { color: "#075f43", fontWeight: "800", fontSize: 12 },
   toggleButtonTextActive: { color: "white" },
-
   toggleButtonSmall: { backgroundColor: "#075f43", paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999 },
   toggleButtonTextSmall: { color: "white", fontWeight: "800", fontSize: 12 },
-
   compareInputs: { gap: 10, marginTop: 12, marginBottom: 16 },
   compareInput: { padding: 12, borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, backgroundColor: "#f9fafb", fontSize: 14 },
   compareGrid: { borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 12, overflow: "hidden" },
@@ -1202,7 +1137,6 @@ const styles = StyleSheet.create({
   compareCell: { flex: 1, paddingHorizontal: 10, fontSize: 13, color: "#374151" },
   compareCellHeader: { fontWeight: "800", color: "#075f43", textTransform: "uppercase", fontSize: 11, letterSpacing: 0.5 },
   compareValue: { textAlign: "right", fontVariant: ["tabular-nums"] },
-
   filterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8, marginBottom: 12 },
   filterButton: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: "#075f43", backgroundColor: "white" },
   filterButtonActive: { backgroundColor: "#075f43" },
@@ -1213,21 +1147,17 @@ const styles = StyleSheet.create({
   rankingName: { fontWeight: "700", color: "#111827", fontSize: 14 },
   riskLevelSmall: { color: "#6b7280", fontSize: 12, marginTop: 2 },
   rankingScore: { fontWeight: "900", fontSize: 18 },
-
   scoreBarWrapper: { marginTop: 12 },
   scoreBarHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
   scoreBarLabel: { fontWeight: "700", color: "#374151", fontSize: 13 },
   scoreBarValue: { fontWeight: "900", fontSize: 13 },
   scoreBarTrack: { height: 10, backgroundColor: "#f3f4f6", borderRadius: 999, overflow: "hidden" },
   scoreBarFill: { height: "100%", borderRadius: 999 },
-
   infoRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
   infoLabel: { fontWeight: "600", color: "#6b7280", fontSize: 13 },
   infoValue: { fontWeight: "800", color: "#111827", fontSize: 13 },
-
   sourceRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
   sourceTitle: { fontSize: 14, fontWeight: "800", color: "#075f43" },
   sourceDetail: { fontSize: 12, color: "#6b7280", marginTop: 2 },
-
   footer: { textAlign: "center", color: "#9ca3af", fontSize: 12, marginTop: 8, paddingHorizontal: 20 },
 });
