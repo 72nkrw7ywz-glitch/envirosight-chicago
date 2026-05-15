@@ -9,7 +9,7 @@ import ee
 import urllib.request
 import urllib.parse
 
-app = FastAPI(title="EnviroSight Chicago API", version="1.5.0")
+app = FastAPI(title="EnviroSight Chicago API", version="1.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -138,7 +138,7 @@ def get_number(properties: dict, possible_keys: list[str], default: float = 0.0)
 
 
 def http_get_json(url: str, timeout: int = 30):
-    req = urllib.request.Request(url, headers={"User-Agent": "EnviroSight-Chicago/1.5"})
+    req = urllib.request.Request(url, headers={"User-Agent": "EnviroSight-Chicago/1.6"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -198,6 +198,16 @@ def reduce_image_by_community(image, band_name, scale):
         else:
             values[community] = None
     return values
+
+
+def safe_reduce(image_fn, band_name, scale, label):
+    """Run a satellite reduction safely. Returns {} if it fails."""
+    try:
+        image = image_fn()
+        return reduce_image_by_community(image, band_name, scale)
+    except Exception as e:
+        print(f"[EE] Layer '{label}' failed: {e}. Skipping.")
+        return {}
 
 
 PUBLIC_HEALTH_URL = "https://data.cityofchicago.org/resource/iqnk-2tcu.json"
@@ -264,37 +274,57 @@ def build_current_geojson():
         scl = image.select("SCL")
         return image.updateMask(scl.neq(3).And(scl.neq(8)).And(scl.neq(9)).And(scl.neq(10)).And(scl.neq(11)))
 
-    sentinel = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-        .filterBounds(chicago_areas).filterDate(start_60, today)
-        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40)).map(mask_s2)
-        .map(lambda i: i.addBands(i.normalizedDifference(["B8", "B4"]).rename("NDVI"))))
-    ndvi_image = sentinel.select("NDVI").median().rename("NDVI")
-
     def mask_landsat(image):
         qa = image.select("QA_PIXEL")
         return image.updateMask(qa.bitwiseAnd(1 << 3).eq(0)).updateMask(qa.bitwiseAnd(1 << 4).eq(0)).updateMask(qa.bitwiseAnd(1 << 5).eq(0))
 
-    landsat = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-        .filterBounds(chicago_areas).filterDate(start_90, today).map(mask_landsat)
-        .map(lambda i: i.addBands(i.select("ST_B10").multiply(0.00341802).add(149.0).subtract(273.15).rename("LST_C"))))
-    lst_image = landsat.select("LST_C").median().rename("LST_C")
-
     def mask_cf(image):
         return image.updateMask(image.select("cloud_fraction").lte(0.3))
 
-    no2_image = (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_NO2").filterBounds(chicago_areas).filterDate(start_14, today).map(mask_cf).select("tropospheric_NO2_column_number_density").mean().rename("NO2"))
-    aod_image = (ee.ImageCollection("NASA/GSFC/MERRA/aer/2").filterBounds(chicago_areas).filterDate(start_30, today).select("TOTEXTTAU").mean().rename("AOD_PM25_PROXY"))
-    so2_image = (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_SO2").filterBounds(chicago_areas).filterDate(start_30, today).map(mask_cf).select("SO2_column_number_density").mean().rename("SO2"))
-    co_image = (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_CO").filterBounds(chicago_areas).filterDate(start_30, today).select("CO_column_number_density").mean().rename("CO"))
-    o3_image = (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_O3").filterBounds(chicago_areas).filterDate(start_30, today).map(mask_cf).select("O3_column_number_density").mean().rename("O3"))
+    def make_ndvi():
+        sentinel = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(chicago_areas).filterDate(start_60, today)
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40)).map(mask_s2)
+            .map(lambda i: i.addBands(i.normalizedDifference(["B8", "B4"]).rename("NDVI"))))
+        return sentinel.select("NDVI").median().rename("NDVI")
 
-    mean_ndvi = reduce_image_by_community(ndvi_image, "NDVI", 10)
-    mean_lst = reduce_image_by_community(lst_image, "LST_C", 30)
-    mean_no2 = reduce_image_by_community(no2_image, "NO2", 1000)
-    mean_aod = reduce_image_by_community(aod_image, "AOD_PM25_PROXY", 50000)
-    mean_so2 = reduce_image_by_community(so2_image, "SO2", 1000)
-    mean_co = reduce_image_by_community(co_image, "CO", 1000)
-    mean_o3 = reduce_image_by_community(o3_image, "O3", 1000)
+    def make_lst():
+        landsat = (ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
+            .filterBounds(chicago_areas).filterDate(start_90, today).map(mask_landsat)
+            .map(lambda i: i.addBands(i.select("ST_B10").multiply(0.00341802).add(149.0).subtract(273.15).rename("LST_C"))))
+        return landsat.select("LST_C").median().rename("LST_C")
+
+    def make_no2():
+        return (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_NO2").filterBounds(chicago_areas).filterDate(start_14, today).map(mask_cf).select("tropospheric_NO2_column_number_density").mean().rename("NO2"))
+
+    def make_aod():
+        # Try newer MODIS dataset first, fall back to MERRA
+        try:
+            modis = (ee.ImageCollection("MODIS/061/MCD19A2_GRANULES")
+                .filterBounds(chicago_areas).filterDate(start_30, today)
+                .select("Optical_Depth_055").mean().rename("AOD_PM25_PROXY"))
+            return modis
+        except Exception:
+            return (ee.ImageCollection("NASA/GSFC/MERRA/aer/2")
+                .filterBounds(chicago_areas).filterDate(start_30, today)
+                .select("TOTEXTTAU").mean().rename("AOD_PM25_PROXY"))
+
+    def make_so2():
+        return (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_SO2").filterBounds(chicago_areas).filterDate(start_30, today).map(mask_cf).select("SO2_column_number_density").mean().rename("SO2"))
+
+    def make_co():
+        return (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_CO").filterBounds(chicago_areas).filterDate(start_30, today).select("CO_column_number_density").mean().rename("CO"))
+
+    def make_o3():
+        return (ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_O3").filterBounds(chicago_areas).filterDate(start_30, today).map(mask_cf).select("O3_column_number_density").mean().rename("O3"))
+
+    mean_ndvi = safe_reduce(make_ndvi, "NDVI", 10, "NDVI")
+    mean_lst = safe_reduce(make_lst, "LST_C", 30, "LST")
+    mean_no2 = safe_reduce(make_no2, "NO2", 1000, "NO2")
+    mean_aod = safe_reduce(make_aod, "AOD_PM25_PROXY", 1000, "AOD")
+    mean_so2 = safe_reduce(make_so2, "SO2", 1000, "SO2")
+    mean_co = safe_reduce(make_co, "CO", 1000, "CO")
+    mean_o3 = safe_reduce(make_o3, "O3", 1000, "O3")
 
     try:
         ph_data = get_public_health_cached()
@@ -593,7 +623,7 @@ def fetch_weather():
 @app.get("/")
 def home():
     return {
-        "message": "EnviroSight Chicago API", "version": "1.5.0",
+        "message": "EnviroSight Chicago API", "version": "1.6.0",
         "endpoints": [
             "/health", "/retry-init", "/refresh-cache",
             "/risk-scores", "/risk-scores/{community_area}",
