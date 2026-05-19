@@ -5,14 +5,17 @@ import {
 import {
   API_BASE,
   AirNowStation,
+  AirNowSummary,
   ColorByMetric,
   FeatureProperties,
   GeoJsonFeature,
   METRIC_LABELS,
   RISK_COLORS,
+  SavedPlace,
   SuperfundSite,
   TriFacility,
   buildQuintileColorFn,
+  computePersonalRisk,
   formatNumber,
   getCommunity,
   getCrowdedHousing,
@@ -28,8 +31,13 @@ import {
   getSesVulnerability,
   getUnemployment,
   getValue,
-  sharedStyles,
+  haversineMiles,
+  loadSavedPlaces,
+  makeSharedStyles,
+  persistSavedPlaces,
   toNumber,
+  useEnviroTheme,
+  ThemeTokens,
 } from "@/lib/envirosight";
 
 type Pin = { lat: number; lng: number; label: string };
@@ -129,11 +137,54 @@ const meteoconUrl = (code: number, isDay: boolean = true): string => {
 };
 
 export default function HomeScreen() {
+  const { theme, pref, setThemePreference } = useEnviroTheme();
+  const sharedStyles = useMemo(() => makeSharedStyles(theme), [theme]);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  const WeatherStat = ({ label, value }: { label: string; value: string }) => (
+    <View style={styles.weatherStat}>
+      <Text style={styles.weatherStatLabel}>{label}</Text>
+      <Text style={styles.weatherStatValue}>{value}</Text>
+    </View>
+  );
+
+  const ScoreBar = ({ label, value }: { label: string; value: number }) => {
+    const safe = Math.max(0, Math.min(100, value));
+    const color = safe >= 70 ? "#c62828" : safe >= 40 ? "#fb8c00" : safe >= 20 ? "#fdd835" : "#9ccc65";
+    return (
+      <View style={styles.scoreBarWrapper}>
+        <View style={styles.scoreBarHeader}>
+          <Text style={styles.scoreBarLabel}>{label}</Text>
+          <Text style={[styles.scoreBarValue, { color }]}>{safe.toFixed(1)}</Text>
+        </View>
+        <View style={styles.scoreBarTrack}>
+          <View style={[styles.scoreBarFill, { width: `${safe}%`, backgroundColor: color }]} />
+        </View>
+      </View>
+    );
+  };
+
+  const InfoRow = ({ label, value }: { label: string; value: string }) => (
+    <View style={styles.infoRow}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
+
+  const QuickStat = ({ label, value }: { label: string; value: string }) => (
+    <View style={styles.quickStat}>
+      <Text style={styles.quickStatLabel}>{label}</Text>
+      <Text style={styles.quickStatValue}>{value}</Text>
+    </View>
+  );
+
   const [geoData, setGeoData] = useState<any>(null);
   const [airnowStations, setAirnowStations] = useState<AirNowStation[]>([]);
+  const [airnowSummary, setAirnowSummary] = useState<AirNowSummary | null>(null);
   const [triFacilities, setTriFacilities] = useState<TriFacility[]>([]);
   const [superfundSites, setSuperfundSites] = useState<SuperfundSite[]>([]);
   const [weather, setWeather] = useState<WeatherData | null>(null);
+  const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
 
   const [showAirnow, setShowAirnow] = useState(true);
   const [showTri, setShowTri] = useState(true);
@@ -187,8 +238,9 @@ export default function HomeScreen() {
     (async () => {
       try { await fetch(`${API_BASE}/health`); } catch {}
       try {
-        const [s, tri, sf, w] = await Promise.all([
+        const [s, sum, tri, sf, w] = await Promise.all([
           fetch(`${API_BASE}/api/airnow-stations`),
+          fetch(`${API_BASE}/api/airnow-summary`),
           fetch(`${API_BASE}/api/tri-facilities`, { signal: AbortSignal.timeout(60000) }),
           fetch(`${API_BASE}/api/superfund-sites`),
           fetch(`${API_BASE}/api/weather`),
@@ -197,6 +249,7 @@ export default function HomeScreen() {
           const d = await s.json();
           if (d.available && Array.isArray(d.stations)) setAirnowStations(d.stations);
         }
+        if (sum.ok) setAirnowSummary(await sum.json());
         if (tri.ok) {
           const d = await tri.json();
           if (d.available && Array.isArray(d.facilities)) setTriFacilities(d.facilities);
@@ -298,6 +351,53 @@ export default function HomeScreen() {
     setPin(null); setPinMatchedFeature(null);
     setAddressQuery(""); setGeocodeError(null);
   };
+
+  useEffect(() => { setSavedPlaces(loadSavedPlaces()); }, []);
+
+  const saveCurrentPlace = () => {
+    if (!pin) return;
+    if (savedPlaces.some((p) => Math.abs(p.lat - pin.lat) < 0.0005 && Math.abs(p.lng - pin.lng) < 0.0005)) return;
+    const next: SavedPlace[] = [
+      ...savedPlaces,
+      { id: `${Date.now()}`, label: pin.label, lat: pin.lat, lng: pin.lng, addedAt: new Date().toISOString() },
+    ];
+    setSavedPlaces(next);
+    persistSavedPlaces(next);
+  };
+
+  const removeSavedPlace = (id: string) => {
+    const next = savedPlaces.filter((p) => p.id !== id);
+    setSavedPlaces(next);
+    persistSavedPlaces(next);
+  };
+
+  const loadSavedPlace = (place: SavedPlace) => {
+    dropPinAt(place.lat, place.lng, place.label);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const isCurrentPinSaved = pin
+    ? savedPlaces.some((p) => Math.abs(p.lat - pin.lat) < 0.0005 && Math.abs(p.lng - pin.lng) < 0.0005)
+    : false;
+
+  const nearbySources = (pin: Pin | null): { superfund: (SuperfundSite & { distance: number })[]; tri: (TriFacility & { distance: number })[] } => {
+    if (!pin) return { superfund: [], tri: [] };
+    const sf = superfundSites
+      .map((s) => ({ ...s, distance: haversineMiles(pin.lat, pin.lng, s.latitude, s.longitude) }))
+      .filter((s) => s.distance <= 2)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 8);
+    const tri = triFacilities
+      .map((t) => ({ ...t, distance: haversineMiles(pin.lat, pin.lng, t.latitude, t.longitude) }))
+      .filter((t) => t.distance <= 2)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 8);
+    return { superfund: sf, tri };
+  };
+
+  const pinNearby = nearbySources(pin);
+  const pinAqi = airnowSummary?.available ? airnowSummary.worst_aqi : null;
+  const pinRisk = pin && pinMatchedFeature ? computePersonalRisk(pinMatchedFeature, pinAqi) : null;
 
   const allNeighborhoods: FeatureProperties[] = geoData?.features?.map((f: GeoJsonFeature) => f.properties) || [];
   const ranked = useMemo(
@@ -514,6 +614,13 @@ export default function HomeScreen() {
   return (
     <ScrollView style={sharedStyles.page}>
       <View style={sharedStyles.hero}>
+        <Pressable
+          onPress={() => setThemePreference(theme.name === "dark" ? "light" : "dark")}
+          style={styles.themeToggle}
+          accessibilityLabel="Toggle dark mode"
+        >
+          <Text style={styles.themeToggleText}>{theme.name === "dark" ? "☀" : "☾"}</Text>
+        </Pressable>
         <Text style={sharedStyles.heroTitle}>EnviroSight Chicago</Text>
         <Text style={sharedStyles.heroSubtitle}>Environmental Risk + Health + Equity</Text>
         <Text style={sharedStyles.heroDescription}>
@@ -648,23 +755,92 @@ export default function HomeScreen() {
         {geocodeError && <Text style={styles.errorText}>{geocodeError}</Text>}
         {pin && pinMatchedFeature && (
           <View style={styles.pinResult}>
-            <Text style={styles.pinResultLabel}>📍 {pin.label}</Text>
-            <Text style={styles.pinResultName}>{getCommunity(pinMatchedFeature)}</Text>
-            <View style={styles.scoreRow}>
-              <Text style={[styles.bigScore, { color: getMetricColor(getDisplayRiskScore(pinMatchedFeature)) }]}>
-                {formatNumber(getDisplayRiskScore(pinMatchedFeature))}
-              </Text>
-              <View style={[styles.riskPill, { backgroundColor: getMetricColor(getDisplayRiskScore(pinMatchedFeature)) }]}>
-                <Text style={styles.riskPillText}>{getRiskLevel(getDisplayRiskScore(pinMatchedFeature))}</Text>
-              </View>
+            <View style={styles.pinResultHeader}>
+              <Text style={styles.pinResultLabel}>📍 {pin.label}</Text>
+              <Pressable
+                onPress={isCurrentPinSaved ? undefined : saveCurrentPlace}
+                style={[styles.savePlaceButton, isCurrentPinSaved && styles.savePlaceButtonSaved]}
+                disabled={isCurrentPinSaved}
+              >
+                <Text style={styles.savePlaceButtonText}>
+                  {isCurrentPinSaved ? "★ Saved" : "☆ Save"}
+                </Text>
+              </Pressable>
             </View>
+            <Text style={styles.pinResultName}>{getCommunity(pinMatchedFeature)}</Text>
+
+            {pinRisk && (
+              <View style={styles.personalRiskBox}>
+                <Text style={styles.personalRiskLabel}>YOUR PERSONAL RISK SCORE</Text>
+                <View style={styles.personalRiskRow}>
+                  <Text style={[styles.personalRiskValue, {
+                    color: pinRisk.level === "High" ? "#c62828" :
+                           pinRisk.level === "Elevated" ? "#fb8c00" :
+                           pinRisk.level === "Moderate" ? "#fdd835" : "#2e7d32"
+                  }]}>
+                    {pinRisk.score.toFixed(0)}
+                  </Text>
+                  <View style={[styles.riskPill, {
+                    backgroundColor: pinRisk.level === "High" ? "#c62828" :
+                           pinRisk.level === "Elevated" ? "#fb8c00" :
+                           pinRisk.level === "Moderate" ? "#fdd835" : "#2e7d32"
+                  }]}>
+                    <Text style={styles.riskPillText}>{pinRisk.level} Risk</Text>
+                  </View>
+                </View>
+                <Text style={styles.personalRiskDriversTitle}>What's driving it</Text>
+                {pinRisk.drivers.slice(0, 3).map((d) => (
+                  <View key={d.label} style={styles.driverRow}>
+                    <Text style={styles.driverLabel}>{d.label}</Text>
+                    <View style={styles.driverBarTrack}>
+                      <View style={[styles.driverBarFill, { width: `${Math.min(100, d.value)}%` }]} />
+                    </View>
+                    <Text style={styles.driverValue}>{Math.round(d.value)}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
             <Text style={styles.explainText}>{explain(pinMatchedFeature)}</Text>
             <View style={styles.pinQuickStats}>
+              <QuickStat label="Area Risk" value={getDisplayRiskScore(pinMatchedFeature).toFixed(1)} />
               <QuickStat label="Air Pollution" value={getSatelliteAirPollutionScore(pinMatchedFeature).toFixed(1)} />
               <QuickStat label="Heat" value={getHeatRisk(pinMatchedFeature).toFixed(1)} />
-              <QuickStat label="Green Space" value={getGreenRisk(pinMatchedFeature).toFixed(1)} />
               {Number.isFinite(getPoverty(pinMatchedFeature)) && <QuickStat label="Poverty %" value={`${getPoverty(pinMatchedFeature).toFixed(1)}%`} />}
             </View>
+
+            {(pinNearby.superfund.length > 0 || pinNearby.tri.length > 0) && (
+              <View style={styles.nearbyBox}>
+                <Text style={styles.nearbyTitle}>Pollution sources within 2 miles</Text>
+                {pinNearby.superfund.map((s) => (
+                  <View key={`sf-${s.id}`} style={styles.nearbyRow}>
+                    <View style={[styles.nearbyDot, { backgroundColor: "#c62828" }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.nearbyName}>☢ {s.name}</Text>
+                      <Text style={styles.nearbyMeta}>
+                        {s.distance.toFixed(2)} mi · {s.status || s.category || "Superfund"}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+                {pinNearby.tri.map((t) => (
+                  <View key={`tri-${t.id}`} style={styles.nearbyRow}>
+                    <View style={[styles.nearbyDot, { backgroundColor: "#6b2e8c" }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.nearbyName}>🏭 {t.name}</Text>
+                      <Text style={styles.nearbyMeta}>
+                        {t.distance.toFixed(2)} mi · TRI facility · {t.zip}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+            {pinNearby.superfund.length === 0 && pinNearby.tri.length === 0 && (
+              <View style={styles.nearbyClean}>
+                <Text style={styles.nearbyCleanText}>✓ No EPA-tracked pollution sources within 2 miles.</Text>
+              </View>
+            )}
           </View>
         )}
         {pin && !pinMatchedFeature && (
@@ -674,6 +850,27 @@ export default function HomeScreen() {
           </View>
         )}
       </View>
+
+      {savedPlaces.length > 0 && (
+        <View style={styles.savedPlacesCard}>
+          <Text style={sharedStyles.cardTitle}>My Places ({savedPlaces.length})</Text>
+          <Text style={sharedStyles.cardSubtitle}>
+            Tap to see the risk score for a saved location.
+          </Text>
+          <View style={styles.savedPlacesRow}>
+            {savedPlaces.map((place) => (
+              <View key={place.id} style={styles.savedPlacePill}>
+                <Pressable onPress={() => loadSavedPlace(place)}>
+                  <Text style={styles.savedPlaceText}>📍 {place.label}</Text>
+                </Pressable>
+                <Pressable onPress={() => removeSavedPlace(place.id)}>
+                  <Text style={styles.savedPlaceRemove}>×</Text>
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
 
       <TextInput
         style={styles.search}
@@ -804,62 +1001,19 @@ export default function HomeScreen() {
   );
 }
 
-function WeatherStat({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.weatherStat}>
-      <Text style={styles.weatherStatLabel}>{label}</Text>
-      <Text style={styles.weatherStatValue}>{value}</Text>
-    </View>
-  );
-}
-
-function ScoreBar({ label, value }: { label: string; value: number }) {
-  const safe = Math.max(0, Math.min(100, value));
-  const color = safe >= 70 ? "#c62828" : safe >= 40 ? "#fb8c00" : safe >= 20 ? "#fdd835" : "#9ccc65";
-  return (
-    <View style={styles.scoreBarWrapper}>
-      <View style={styles.scoreBarHeader}>
-        <Text style={styles.scoreBarLabel}>{label}</Text>
-        <Text style={[styles.scoreBarValue, { color }]}>{safe.toFixed(1)}</Text>
-      </View>
-      <View style={styles.scoreBarTrack}>
-        <View style={[styles.scoreBarFill, { width: `${safe}%`, backgroundColor: color }]} />
-      </View>
-    </View>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.infoRow}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={styles.infoValue}>{value}</Text>
-    </View>
-  );
-}
-
-function QuickStat({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.quickStat}>
-      <Text style={styles.quickStatLabel}>{label}</Text>
-      <Text style={styles.quickStatValue}>{value}</Text>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  liveBanner: { backgroundColor: "white", margin: 20, marginBottom: 0, padding: 16, borderRadius: 14, borderLeftWidth: 4 },
+const createStyles = (t: ThemeTokens) => StyleSheet.create({
+  liveBanner: { backgroundColor: t.card, margin: 20, marginBottom: 0, padding: 16, borderRadius: 14, borderLeftWidth: 4 },
   liveBannerRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
   statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
-  liveBannerTitle: { fontSize: 15, fontWeight: "800", color: "#111827" },
-  liveBannerSubtext: { fontSize: 13, color: "#6b7280", marginLeft: 20 },
+  liveBannerTitle: { fontSize: 15, fontWeight: "800", color: t.text },
+  liveBannerSubtext: { fontSize: 13, color: t.textMuted, marginLeft: 20 },
 
   alertsCard: { margin: 20, marginBottom: 0, gap: 10 },
-  alertItem: { backgroundColor: "#fff7ed", padding: 14, borderRadius: 10, borderLeftWidth: 4 },
-  alertEvent: { fontSize: 13, fontWeight: "900", color: "#9a3412", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 },
-  alertHeadline: { fontSize: 14, fontWeight: "800", color: "#111827", marginBottom: 6, lineHeight: 19 },
-  alertInstruction: { fontSize: 13, color: "#374151", marginBottom: 6, lineHeight: 18 },
-  alertMeta: { fontSize: 11, color: "#9a3412", fontWeight: "700" },
+  alertItem: { backgroundColor: t.name === "dark" ? "#3a1f0a" : "#fff7ed", padding: 14, borderRadius: 10, borderLeftWidth: 4 },
+  alertEvent: { fontSize: 13, fontWeight: "900", color: t.name === "dark" ? "#fdba74" : "#9a3412", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 },
+  alertHeadline: { fontSize: 14, fontWeight: "800", color: t.text, marginBottom: 6, lineHeight: 19 },
+  alertInstruction: { fontSize: 13, color: t.textMuted, marginBottom: 6, lineHeight: 18 },
+  alertMeta: { fontSize: 11, color: t.name === "dark" ? "#fdba74" : "#9a3412", fontWeight: "700" },
   weatherCard: { margin: 20, marginBottom: 0, padding: 18, borderRadius: 14 },
   weatherHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
   weatherLocation: { color: "white", fontSize: 15, fontWeight: "800" },
@@ -885,62 +1039,92 @@ const styles = StyleSheet.create({
   sunRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 6, paddingTop: 10, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.15)" },
   sunText: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "600" },
 
-  search: { margin: 20, marginTop: 16, marginBottom: 0, padding: 14, borderRadius: 12, backgroundColor: "white", borderWidth: 1, borderColor: "#e5e7eb", fontSize: 14 },
+  search: { margin: 20, marginTop: 16, marginBottom: 0, padding: 14, borderRadius: 12, backgroundColor: t.card, borderWidth: 1, borderColor: t.borderStrong, fontSize: 14, color: t.text },
 
   addressInputRow: { flexDirection: "row", gap: 8 },
-  addressInput: { flex: 1, padding: 12, borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, backgroundColor: "#f9fafb", fontSize: 14 },
-  addressSearchButton: { backgroundColor: "#075f43", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, alignItems: "center", justifyContent: "center", minWidth: 80 },
+  addressInput: { flex: 1, padding: 12, borderWidth: 1, borderColor: t.inputBorder, borderRadius: 10, backgroundColor: t.inputBg, fontSize: 14, color: t.text },
+  addressSearchButton: { backgroundColor: t.brand, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, alignItems: "center", justifyContent: "center", minWidth: 80 },
   addressSearchButtonText: { color: "white", fontWeight: "800", fontSize: 14 },
   addressActionRow: { flexDirection: "row", gap: 8, marginTop: 10 },
-  locationButton: { flex: 1, backgroundColor: "#eef8f2", paddingVertical: 10, borderRadius: 10, alignItems: "center", borderWidth: 1, borderColor: "#075f43" },
-  locationButtonText: { color: "#075f43", fontWeight: "800", fontSize: 13 },
-  clearButton: { backgroundColor: "#f3f4f6", paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, alignItems: "center" },
-  clearButtonText: { color: "#6b7280", fontWeight: "700", fontSize: 13 },
-  errorText: { color: "#c62828", fontSize: 13, marginTop: 8, fontWeight: "700" },
+  locationButton: { flex: 1, backgroundColor: t.brandTint, paddingVertical: 10, borderRadius: 10, alignItems: "center", borderWidth: 1, borderColor: t.brand },
+  locationButtonText: { color: t.brand, fontWeight: "800", fontSize: 13 },
+  clearButton: { backgroundColor: t.border, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, alignItems: "center" },
+  clearButtonText: { color: t.textMuted, fontWeight: "700", fontSize: 13 },
+  errorText: { color: t.danger, fontSize: 13, marginTop: 8, fontWeight: "700" },
 
-  pinResult: { marginTop: 16, padding: 14, backgroundColor: "#eef8f2", borderRadius: 10, borderLeftWidth: 4, borderLeftColor: "#075f43" },
-  pinResultLabel: { fontWeight: "800", color: "#075f43", fontSize: 13, marginBottom: 4 },
-  pinResultName: { fontSize: 20, fontWeight: "900", color: "#111827", marginBottom: 8 },
+  pinResult: { marginTop: 16, padding: 14, backgroundColor: t.brandTint, borderRadius: 10, borderLeftWidth: 4, borderLeftColor: t.brand },
+  pinResultHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
+  pinResultLabel: { fontWeight: "800", color: t.brand, fontSize: 13, flex: 1 },
+  pinResultName: { fontSize: 20, fontWeight: "900", color: t.text, marginBottom: 8 },
+  savePlaceButton: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: t.brand },
+  savePlaceButtonSaved: { backgroundColor: t.success },
+  savePlaceButtonText: { color: "white", fontWeight: "800", fontSize: 12 },
+  personalRiskBox: { backgroundColor: t.card, padding: 12, borderRadius: 10, marginVertical: 10 },
+  personalRiskLabel: { fontSize: 10, fontWeight: "800", color: t.textMuted, textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 6 },
+  personalRiskRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
+  personalRiskValue: { fontSize: 44, fontWeight: "900", lineHeight: 48 },
+  personalRiskDriversTitle: { fontSize: 11, fontWeight: "800", color: t.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8, marginTop: 4 },
+  driverRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 6 },
+  driverLabel: { width: 140, fontSize: 11, fontWeight: "700", color: t.text },
+  driverBarTrack: { flex: 1, height: 8, backgroundColor: t.border, borderRadius: 999, overflow: "hidden" },
+  driverBarFill: { height: "100%", backgroundColor: t.brand, borderRadius: 999 },
+  driverValue: { width: 28, textAlign: "right", fontSize: 11, fontWeight: "800", color: t.text, fontVariant: ["tabular-nums"] },
+  nearbyBox: { marginTop: 14, padding: 12, backgroundColor: t.card, borderRadius: 10 },
+  nearbyTitle: { fontSize: 12, fontWeight: "800", color: t.text, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 },
+  nearbyRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: t.border },
+  nearbyDot: { width: 8, height: 8, borderRadius: 4, marginTop: 5, flexShrink: 0 },
+  nearbyName: { fontWeight: "700", color: t.text, fontSize: 13 },
+  nearbyMeta: { color: t.textMuted, fontSize: 11, marginTop: 2 },
+  nearbyClean: { marginTop: 14, padding: 12, backgroundColor: t.name === "dark" ? "#0f3a26" : "#ecfdf5", borderRadius: 10 },
+  nearbyCleanText: { color: t.name === "dark" ? "#86efac" : "#065f46", fontWeight: "700", fontSize: 13 },
+  savedPlacesCard: { backgroundColor: t.card, margin: 20, marginTop: 16, marginBottom: 0, padding: 16, borderRadius: 14 },
+  savedPlacesRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  savedPlacePill: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: t.brandTint, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999 },
+  savedPlaceText: { color: t.brand, fontWeight: "700", fontSize: 12 },
+  savedPlaceRemove: { color: t.textSubtle, fontWeight: "700", fontSize: 14, paddingHorizontal: 4 },
   pinQuickStats: { flexDirection: "row", gap: 10, marginTop: 12, flexWrap: "wrap" },
-  quickStat: { flex: 1, minWidth: 90, backgroundColor: "white", padding: 8, borderRadius: 8 },
-  quickStatLabel: { fontSize: 10, fontWeight: "700", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.4 },
-  quickStatValue: { fontSize: 14, fontWeight: "900", color: "#111827", marginTop: 2 },
+  quickStat: { flex: 1, minWidth: 90, backgroundColor: t.card, padding: 8, borderRadius: 8 },
+  quickStatLabel: { fontSize: 10, fontWeight: "700", color: t.textMuted, textTransform: "uppercase", letterSpacing: 0.4 },
+  quickStatValue: { fontSize: 14, fontWeight: "900", color: t.text, marginTop: 2 },
 
   scoreRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
   bigScore: { fontSize: 36, fontWeight: "900" },
   riskPill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999 },
   riskPillText: { color: "white", fontWeight: "800", fontSize: 12 },
-  explainBox: { backgroundColor: "#f9fafb", padding: 12, borderRadius: 10, marginBottom: 14 },
-  explainText: { color: "#374151", fontSize: 13, lineHeight: 19 },
-  sectionTitle: { fontSize: 13, fontWeight: "800", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.6, marginTop: 14, marginBottom: 8 },
+  explainBox: { backgroundColor: t.cardElevated, padding: 12, borderRadius: 10, marginBottom: 14 },
+  explainText: { color: t.text, fontSize: 13, lineHeight: 19 },
+  sectionTitle: { fontSize: 13, fontWeight: "800", color: t.textMuted, textTransform: "uppercase", letterSpacing: 0.6, marginTop: 14, marginBottom: 8 },
 
   scoreBarWrapper: { marginTop: 8 },
   scoreBarHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 4 },
-  scoreBarLabel: { fontWeight: "700", color: "#374151", fontSize: 13 },
+  scoreBarLabel: { fontWeight: "700", color: t.text, fontSize: 13 },
   scoreBarValue: { fontWeight: "900", fontSize: 13 },
-  scoreBarTrack: { height: 10, backgroundColor: "#f3f4f6", borderRadius: 999, overflow: "hidden" },
+  scoreBarTrack: { height: 10, backgroundColor: t.border, borderRadius: 999, overflow: "hidden" },
   scoreBarFill: { height: "100%", borderRadius: 999 },
 
-  infoRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  infoLabel: { fontWeight: "600", color: "#6b7280", fontSize: 13 },
-  infoValue: { fontWeight: "800", color: "#111827", fontSize: 13 },
+  infoRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: t.border },
+  infoLabel: { fontWeight: "600", color: t.textMuted, fontSize: 13 },
+  infoValue: { fontWeight: "800", color: t.text, fontSize: 13 },
 
-  mapCard: { backgroundColor: "white", margin: 20, marginBottom: 0, padding: 16, borderRadius: 14 },
+  mapCard: { backgroundColor: t.card, margin: 20, marginBottom: 0, padding: 16, borderRadius: 14 },
   mapHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10, flexWrap: "wrap" },
-  metricLabel: { fontSize: 10, fontWeight: "800", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 },
+  metricLabel: { fontSize: 10, fontWeight: "800", color: t.textMuted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 },
   colorByRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 12 },
-  colorByButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: "#f3f4f6" },
-  colorByButtonActive: { backgroundColor: "#075f43" },
-  colorByButtonText: { color: "#374151", fontWeight: "700", fontSize: 12 },
+  colorByButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: t.border },
+  colorByButtonActive: { backgroundColor: t.brand },
+  colorByButtonText: { color: t.text, fontWeight: "700", fontSize: 12 },
   colorByButtonTextActive: { color: "white" },
 
   toggleGroup: { flexDirection: "row", gap: 6, flexWrap: "wrap" },
-  basemapToggle: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: "#075f43", backgroundColor: "white" },
-  basemapToggleText: { color: "#075f43", fontWeight: "800", fontSize: 12 },
-  toggleButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: "#075f43", backgroundColor: "white" },
-  toggleButtonActive: { backgroundColor: "#075f43", borderColor: "#075f43" },
+  basemapToggle: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: t.brand, backgroundColor: t.card },
+  basemapToggleText: { color: t.brand, fontWeight: "800", fontSize: 12 },
+  toggleButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: t.brand, backgroundColor: t.card },
+  toggleButtonActive: { backgroundColor: t.brand, borderColor: t.brand },
   toggleButtonActiveTri: { backgroundColor: "#6b2e8c", borderColor: "#6b2e8c" },
-  toggleButtonActiveSuperfund: { backgroundColor: "#c62828", borderColor: "#c62828" },
-  toggleButtonText: { color: "#075f43", fontWeight: "800", fontSize: 12 },
+  toggleButtonActiveSuperfund: { backgroundColor: t.danger, borderColor: t.danger },
+  toggleButtonText: { color: t.brand, fontWeight: "800", fontSize: 12 },
   toggleButtonTextActive: { color: "white" },
+
+  themeToggle: { position: "absolute", top: 28, right: 20, backgroundColor: "rgba(255,255,255,0.15)", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
+  themeToggleText: { color: "white", fontSize: 14, fontWeight: "800" },
 });

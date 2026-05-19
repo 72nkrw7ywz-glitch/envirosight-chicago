@@ -4,7 +4,7 @@ import {
   API_BASE,
   FeatureProperties,
   GeoJsonFeature,
-  RISK_COLORS,
+  ThemeTokens,
   buildQuintileColorFn,
   getCommunity,
   getDisplayRiskScore,
@@ -15,7 +15,8 @@ import {
   getRiskLevel,
   getSatelliteAirPollutionScore,
   getUnemployment,
-  sharedStyles,
+  makeSharedStyles,
+  useEnviroTheme,
 } from "@/lib/envirosight";
 
 type InsightsTab = "distribution" | "search" | "health" | "ej";
@@ -23,6 +24,61 @@ type AqsSeries = Record<string, { month: string; mean: number; unit: string; n: 
 type AqsHistory = { available: boolean; message?: string; series?: AqsSeries; county?: string };
 
 export default function AnalyzeScreen() {
+  const { theme } = useEnviroTheme();
+  const sharedStyles = useMemo(() => makeSharedStyles(theme), [theme]);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  const DistCard = ({ count, pct, label, color }: { count: number; pct: number; label: string; color: string }) => (
+    <View style={styles.distCard}>
+      <Text style={[styles.distValue, { color }]}>{count}</Text>
+      <Text style={styles.distLabel}>{label}</Text>
+      <Text style={styles.distSubtext}>{pct.toFixed(0)}% of areas</Text>
+    </View>
+  );
+
+  const ComparisonHeader = ({ nameA, nameB }: { nameA: string; nameB: string }) => (
+    <View style={styles.compareHeaderRow}>
+      <Text style={[styles.compareCell, styles.compareCellHeader]}>Indicator</Text>
+      <Text style={[styles.compareCell, styles.compareCellHeader]} numberOfLines={1}>{nameA}</Text>
+      <Text style={[styles.compareCell, styles.compareCellHeader]} numberOfLines={1}>{nameB}</Text>
+    </View>
+  );
+
+  const ComparisonRow = ({ label, valueA, valueB }: { label: string; valueA: number; valueB: number }) => {
+    const higher = valueA > valueB ? "A" : valueB > valueA ? "B" : "tie";
+    const a = Number.isFinite(valueA) ? valueA.toFixed(1) : "N/A";
+    const b = Number.isFinite(valueB) ? valueB.toFixed(1) : "N/A";
+    return (
+      <View style={styles.compareDataRow}>
+        <Text style={styles.compareCell}>{label}</Text>
+        <Text style={[styles.compareCell, styles.compareValue, { color: higher === "A" ? theme.danger : theme.text, fontWeight: higher === "A" ? "900" : "600" }]}>{a}</Text>
+        <Text style={[styles.compareCell, styles.compareValue, { color: higher === "B" ? theme.danger : theme.text, fontWeight: higher === "B" ? "900" : "600" }]}>{b}</Text>
+      </View>
+    );
+  };
+
+  const HealthRow = ({ label, high, low }: { label: string; high: string; low: string }) => (
+    <View style={styles.healthRow}>
+      <Text style={styles.healthCell}>{label}</Text>
+      <Text style={[styles.healthCell, styles.healthValue, { color: theme.danger }]}>{high}</Text>
+      <Text style={[styles.healthCell, styles.healthValue, { color: theme.success }]}>{low}</Text>
+    </View>
+  );
+
+  const SearchStat = ({ label, value }: { label: string; value: string }) => (
+    <View style={styles.searchStat}>
+      <Text style={styles.searchStatLabel}>{label}</Text>
+      <Text style={styles.searchStatValue}>{value}</Text>
+    </View>
+  );
+
+  const DataSource = ({ title, detail }: { title: string; detail: string }) => (
+    <View style={styles.sourceRow}>
+      <Text style={styles.sourceTitle}>{title}</Text>
+      <Text style={styles.sourceDetail}>{detail}</Text>
+    </View>
+  );
+
   const [geoData, setGeoData] = useState<any>(null);
   const [compareA, setCompareA] = useState("");
   const [compareB, setCompareB] = useState("");
@@ -406,142 +462,81 @@ export default function AnalyzeScreen() {
   );
 }
 
-function DistCard({ count, pct, label, color }: { count: number; pct: number; label: string; color: string }) {
-  return (
-    <View style={styles.distCard}>
-      <Text style={[styles.distValue, { color }]}>{count}</Text>
-      <Text style={styles.distLabel}>{label}</Text>
-      <Text style={styles.distSubtext}>{pct.toFixed(0)}% of areas</Text>
-    </View>
-  );
-}
-
-function ComparisonHeader({ nameA, nameB }: { nameA: string; nameB: string }) {
-  return (
-    <View style={styles.compareHeaderRow}>
-      <Text style={[styles.compareCell, styles.compareCellHeader]}>Indicator</Text>
-      <Text style={[styles.compareCell, styles.compareCellHeader]} numberOfLines={1}>{nameA}</Text>
-      <Text style={[styles.compareCell, styles.compareCellHeader]} numberOfLines={1}>{nameB}</Text>
-    </View>
-  );
-}
-
-function ComparisonRow({ label, valueA, valueB }: { label: string; valueA: number; valueB: number }) {
-  const higher = valueA > valueB ? "A" : valueB > valueA ? "B" : "tie";
-  const a = Number.isFinite(valueA) ? valueA.toFixed(1) : "N/A";
-  const b = Number.isFinite(valueB) ? valueB.toFixed(1) : "N/A";
-  return (
-    <View style={styles.compareDataRow}>
-      <Text style={styles.compareCell}>{label}</Text>
-      <Text style={[styles.compareCell, styles.compareValue, { color: higher === "A" ? "#c62828" : "#374151", fontWeight: higher === "A" ? "900" : "600" }]}>{a}</Text>
-      <Text style={[styles.compareCell, styles.compareValue, { color: higher === "B" ? "#c62828" : "#374151", fontWeight: higher === "B" ? "900" : "600" }]}>{b}</Text>
-    </View>
-  );
-}
-
-function HealthRow({ label, high, low }: { label: string; high: string; low: string }) {
-  return (
-    <View style={styles.healthRow}>
-      <Text style={styles.healthCell}>{label}</Text>
-      <Text style={[styles.healthCell, styles.healthValue, { color: "#c62828" }]}>{high}</Text>
-      <Text style={[styles.healthCell, styles.healthValue, { color: "#2e7d32" }]}>{low}</Text>
-    </View>
-  );
-}
-
-function SearchStat({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.searchStat}>
-      <Text style={styles.searchStatLabel}>{label}</Text>
-      <Text style={styles.searchStatValue}>{value}</Text>
-    </View>
-  );
-}
-
-function DataSource({ title, detail }: { title: string; detail: string }) {
-  return (
-    <View style={styles.sourceRow}>
-      <Text style={styles.sourceTitle}>{title}</Text>
-      <Text style={styles.sourceDetail}>{detail}</Text>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  rankRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  rankNum: { width: 36, fontWeight: "900", color: "#075f43", fontSize: 13 },
-  rankName: { width: 140, fontWeight: "700", color: "#111827", fontSize: 13 },
-  rankBarContainer: { flex: 1, height: 24, backgroundColor: "#f3f4f6", borderRadius: 6, overflow: "hidden", justifyContent: "center", position: "relative" },
+const createStyles = (t: ThemeTokens) => StyleSheet.create({
+  rankRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: t.border },
+  rankNum: { width: 36, fontWeight: "900", color: t.brand, fontSize: 13 },
+  rankName: { width: 140, fontWeight: "700", color: t.text, fontSize: 13 },
+  rankBarContainer: { flex: 1, height: 24, backgroundColor: t.border, borderRadius: 6, overflow: "hidden", justifyContent: "center", position: "relative" },
   rankBar: { position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 6 },
-  rankScore: { position: "absolute", right: 8, fontWeight: "900", color: "#111827", fontSize: 12 },
+  rankScore: { position: "absolute", right: 8, fontWeight: "900", color: t.text, fontSize: 12 },
 
   sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
-  toggleButtonSmall: { backgroundColor: "#075f43", paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999 },
+  toggleButtonSmall: { backgroundColor: t.brand, paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999 },
   toggleButtonTextSmall: { color: "white", fontWeight: "800", fontSize: 12 },
 
   compareInputs: { gap: 10, marginTop: 12, marginBottom: 16 },
-  compareInput: { padding: 12, borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, backgroundColor: "#f9fafb", fontSize: 14 },
-  compareGrid: { borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 12, overflow: "hidden" },
-  compareHeaderRow: { flexDirection: "row", backgroundColor: "#eef8f2", paddingVertical: 10 },
-  compareDataRow: { flexDirection: "row", borderTopWidth: 1, borderTopColor: "#e5e7eb", paddingVertical: 10 },
-  compareCell: { flex: 1, paddingHorizontal: 10, fontSize: 13, color: "#374151" },
-  compareCellHeader: { fontWeight: "800", color: "#075f43", textTransform: "uppercase", fontSize: 11, letterSpacing: 0.5 },
+  compareInput: { padding: 12, borderWidth: 1, borderColor: t.inputBorder, borderRadius: 10, backgroundColor: t.inputBg, fontSize: 14, color: t.text },
+  compareGrid: { borderWidth: 1, borderColor: t.borderStrong, borderRadius: 12, overflow: "hidden" },
+  compareHeaderRow: { flexDirection: "row", backgroundColor: t.brandTint, paddingVertical: 10 },
+  compareDataRow: { flexDirection: "row", borderTopWidth: 1, borderTopColor: t.borderStrong, paddingVertical: 10 },
+  compareCell: { flex: 1, paddingHorizontal: 10, fontSize: 13, color: t.text },
+  compareCellHeader: { fontWeight: "800", color: t.brand, textTransform: "uppercase", fontSize: 11, letterSpacing: 0.5 },
   compareValue: { textAlign: "right", fontVariant: ["tabular-nums"] },
 
   insightsTabRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
-  insightsTab: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: "#f3f4f6" },
-  insightsTabActive: { backgroundColor: "#075f43" },
-  insightsTabText: { fontSize: 13, fontWeight: "700", color: "#374151" },
+  insightsTab: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: t.border },
+  insightsTabActive: { backgroundColor: t.brand },
+  insightsTabText: { fontSize: 13, fontWeight: "700", color: t.text },
   insightsTabTextActive: { color: "white" },
 
   distRow: { flexDirection: "row", gap: 10, marginTop: 14 },
-  distCard: { flex: 1, backgroundColor: "#f9fafb", padding: 14, borderRadius: 10, alignItems: "center" },
+  distCard: { flex: 1, backgroundColor: t.cardElevated, padding: 14, borderRadius: 10, alignItems: "center" },
   distValue: { fontSize: 30, fontWeight: "900", lineHeight: 34 },
-  distLabel: { fontSize: 12, fontWeight: "700", color: "#111827", marginTop: 4 },
-  distSubtext: { fontSize: 11, color: "#6b7280", marginTop: 2 },
-  distBarTrack: { flexDirection: "row", height: 12, borderRadius: 999, overflow: "hidden", marginTop: 14, backgroundColor: "#f3f4f6" },
+  distLabel: { fontSize: 12, fontWeight: "700", color: t.text, marginTop: 4 },
+  distSubtext: { fontSize: 11, color: t.textMuted, marginTop: 2 },
+  distBarTrack: { flexDirection: "row", height: 12, borderRadius: 999, overflow: "hidden", marginTop: 14, backgroundColor: t.border },
   distBarSeg: { height: "100%" },
-  insightCaption: { fontSize: 12, color: "#6b7280", marginTop: 12, lineHeight: 18, fontStyle: "italic" },
+  insightCaption: { fontSize: 12, color: t.textMuted, marginTop: 12, lineHeight: 18, fontStyle: "italic" },
 
-  insightsSearchInput: { padding: 12, borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, backgroundColor: "#f9fafb", fontSize: 14, marginBottom: 12 },
-  searchResultCard: { backgroundColor: "#f9fafb", padding: 14, borderRadius: 10, marginBottom: 8 },
+  insightsSearchInput: { padding: 12, borderWidth: 1, borderColor: t.inputBorder, borderRadius: 10, backgroundColor: t.inputBg, fontSize: 14, marginBottom: 12, color: t.text },
+  searchResultCard: { backgroundColor: t.cardElevated, padding: 14, borderRadius: 10, marginBottom: 8 },
   searchResultHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  searchResultName: { fontWeight: "800", color: "#111827", fontSize: 15 },
+  searchResultName: { fontWeight: "800", color: t.text, fontSize: 15 },
   searchResultScore: { fontWeight: "900", fontSize: 22 },
-  searchResultMeta: { fontSize: 12, color: "#6b7280", marginTop: 2 },
+  searchResultMeta: { fontSize: 12, color: t.textMuted, marginTop: 2 },
   searchResultStats: { flexDirection: "row", gap: 14, marginTop: 10 },
   searchStat: { flex: 1 },
-  searchStatLabel: { fontSize: 10, fontWeight: "700", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.4 },
-  searchStatValue: { fontSize: 16, fontWeight: "900", color: "#111827", marginTop: 2 },
+  searchStatLabel: { fontSize: 10, fontWeight: "700", color: t.textMuted, textTransform: "uppercase", letterSpacing: 0.4 },
+  searchStatValue: { fontSize: 16, fontWeight: "900", color: t.text, marginTop: 2 },
 
-  healthGrid: { borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 12, overflow: "hidden", marginTop: 14 },
-  healthHeaderRow: { flexDirection: "row", backgroundColor: "#eef8f2", paddingVertical: 10 },
-  healthRow: { flexDirection: "row", borderTopWidth: 1, borderTopColor: "#e5e7eb", paddingVertical: 10 },
-  healthCell: { flex: 1, paddingHorizontal: 10, fontSize: 13, color: "#374151" },
+  healthGrid: { borderWidth: 1, borderColor: t.borderStrong, borderRadius: 12, overflow: "hidden", marginTop: 14 },
+  healthHeaderRow: { flexDirection: "row", backgroundColor: t.brandTint, paddingVertical: 10 },
+  healthRow: { flexDirection: "row", borderTopWidth: 1, borderTopColor: t.borderStrong, paddingVertical: 10 },
+  healthCell: { flex: 1, paddingHorizontal: 10, fontSize: 13, color: t.text },
   healthCellHeader: { fontWeight: "800", textTransform: "uppercase", fontSize: 11, letterSpacing: 0.5 },
   healthValue: { textAlign: "right", fontWeight: "800", fontVariant: ["tabular-nums"] },
 
-  ejStatRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  ejStatValue: { fontSize: 36, fontWeight: "900", color: "#c62828", width: 60, textAlign: "center" },
-  ejStatLabel: { fontWeight: "800", color: "#111827", fontSize: 14 },
-  ejStatDetail: { fontSize: 12, color: "#6b7280", marginTop: 2, lineHeight: 17 },
-  ejHighlight: { backgroundColor: "#fff3cd", padding: 14, borderRadius: 10, marginTop: 14, borderLeftWidth: 4, borderLeftColor: "#f59e0b" },
-  ejHighlightLabel: { fontSize: 11, fontWeight: "800", color: "#92400e", textTransform: "uppercase", letterSpacing: 0.5 },
-  ejHighlightValue: { fontSize: 24, fontWeight: "900", color: "#92400e", marginTop: 4 },
-  ejHighlightDetail: { fontSize: 12, color: "#92400e", marginTop: 4, lineHeight: 17 },
+  ejStatRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: t.border },
+  ejStatValue: { fontSize: 36, fontWeight: "900", color: t.danger, width: 60, textAlign: "center" },
+  ejStatLabel: { fontWeight: "800", color: t.text, fontSize: 14 },
+  ejStatDetail: { fontSize: 12, color: t.textMuted, marginTop: 2, lineHeight: 17 },
+  ejHighlight: { backgroundColor: t.name === "dark" ? "#3a2c0a" : "#fff3cd", padding: 14, borderRadius: 10, marginTop: 14, borderLeftWidth: 4, borderLeftColor: t.warning },
+  ejHighlightLabel: { fontSize: 11, fontWeight: "800", color: t.name === "dark" ? "#fcd34d" : "#92400e", textTransform: "uppercase", letterSpacing: 0.5 },
+  ejHighlightValue: { fontSize: 24, fontWeight: "900", color: t.name === "dark" ? "#fcd34d" : "#92400e", marginTop: 4 },
+  ejHighlightDetail: { fontSize: 12, color: t.name === "dark" ? "#fcd34d" : "#92400e", marginTop: 4, lineHeight: 17 },
 
-  formula: { backgroundColor: "#f9fafb", padding: 12, borderRadius: 8, fontSize: 13, fontWeight: "700", color: "#075f43", fontVariant: ["tabular-nums"] },
-  sourceRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  sourceTitle: { fontSize: 14, fontWeight: "800", color: "#075f43" },
-  sourceDetail: { fontSize: 12, color: "#6b7280", marginTop: 2 },
+  formula: { backgroundColor: t.cardElevated, padding: 12, borderRadius: 8, fontSize: 13, fontWeight: "700", color: t.brand, fontVariant: ["tabular-nums"] },
+  sourceRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: t.border },
+  sourceTitle: { fontSize: 14, fontWeight: "800", color: t.brand },
+  sourceDetail: { fontSize: 12, color: t.textMuted, marginTop: 2 },
 
-  aqsUnavailable: { padding: 14, backgroundColor: "#fef3c7", borderRadius: 10, borderLeftWidth: 4, borderLeftColor: "#f59e0b" },
-  aqsUnavailableText: { fontWeight: "700", color: "#92400e", marginBottom: 4 },
+  aqsUnavailable: { padding: 14, backgroundColor: t.name === "dark" ? "#3a2c0a" : "#fef3c7", borderRadius: 10, borderLeftWidth: 4, borderLeftColor: t.warning },
+  aqsUnavailableText: { fontWeight: "700", color: t.name === "dark" ? "#fcd34d" : "#92400e", marginBottom: 4 },
   aqsRow: { marginTop: 14 },
   aqsRowHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
-  aqsPollutant: { fontWeight: "800", color: "#111827", fontSize: 14 },
-  aqsUnit: { fontSize: 11, color: "#6b7280", fontWeight: "600" },
-  aqsChart: { flexDirection: "row", alignItems: "flex-end", height: 100, gap: 2, backgroundColor: "#f9fafb", padding: 8, borderRadius: 8 },
+  aqsPollutant: { fontWeight: "800", color: t.text, fontSize: 14 },
+  aqsUnit: { fontSize: 11, color: t.textMuted, fontWeight: "600" },
+  aqsChart: { flexDirection: "row", alignItems: "flex-end", height: 100, gap: 2, backgroundColor: t.cardElevated, padding: 8, borderRadius: 8 },
   aqsBarColumn: { flex: 1, alignItems: "center", justifyContent: "flex-end", height: "100%" },
   aqsBar: { width: "80%", backgroundColor: "#075f43", borderRadius: 2, minHeight: 2 },
   aqsMonth: { fontSize: 9, color: "#6b7280", marginTop: 2, fontWeight: "600" },

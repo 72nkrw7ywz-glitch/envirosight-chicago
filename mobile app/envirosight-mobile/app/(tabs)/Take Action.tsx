@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Text, ScrollView, StyleSheet, Pressable, Linking } from "react-native";
+import { ThemeTokens, useEnviroTheme } from "@/lib/envirosight";
 
 type ContactInfo = {
   name: string;
@@ -97,6 +98,9 @@ const ACTION_STEPS = [
 ];
 
 export default function ActionScreen() {
+  const { theme } = useEnviroTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
   const handleCall = (phone: string) => {
     Linking.openURL(`tel:${phone.replace(/-/g, "")}`).catch(() => {});
   };
@@ -239,32 +243,32 @@ export default function ActionScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#f6faf7" },
-  hero: { backgroundColor: "#075f43", padding: 34, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },
+const createStyles = (t: ThemeTokens) => StyleSheet.create({
+  page: { flex: 1, backgroundColor: t.bg },
+  hero: { backgroundColor: t.brand, padding: 34, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },
   title: { color: "white", fontSize: 38, fontWeight: "800", marginBottom: 8, letterSpacing: -0.5 },
   subtitle: { color: "#a7f3d0", fontSize: 18, fontWeight: "600", marginBottom: 12 },
   description: { color: "rgba(255,255,255,0.92)", fontSize: 15, lineHeight: 22 },
-  card: { backgroundColor: "white", marginHorizontal: 20, marginTop: 20, padding: 22, borderRadius: 18, borderWidth: 1, borderColor: "#e5e7eb" },
-  cardTitle: { fontSize: 22, fontWeight: "800", color: "#075f43", marginBottom: 12 },
-  bodyText: { fontSize: 14, lineHeight: 22, color: "#374151", marginBottom: 12 },
-  primaryButton: { backgroundColor: "#c62828", padding: 14, borderRadius: 12, alignItems: "center", marginTop: 8 },
+  card: { backgroundColor: t.card, marginHorizontal: 20, marginTop: 20, padding: 22, borderRadius: 18, borderWidth: 1, borderColor: t.borderStrong },
+  cardTitle: { fontSize: 22, fontWeight: "800", color: t.brand, marginBottom: 12 },
+  bodyText: { fontSize: 14, lineHeight: 22, color: t.text, marginBottom: 12 },
+  primaryButton: { backgroundColor: t.danger, padding: 14, borderRadius: 12, alignItems: "center", marginTop: 8 },
   primaryButtonText: { color: "white", fontWeight: "800", fontSize: 15 },
-  secondaryButton: { backgroundColor: "#075f43", padding: 14, borderRadius: 12, alignItems: "center", marginTop: 8 },
+  secondaryButton: { backgroundColor: t.brand, padding: 14, borderRadius: 12, alignItems: "center", marginTop: 8 },
   secondaryButtonText: { color: "white", fontWeight: "800", fontSize: 15 },
-  actionStep: { flexDirection: "row", gap: 14, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
+  actionStep: { flexDirection: "row", gap: 14, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: t.border },
   actionIcon: { fontSize: 28, width: 36 },
-  actionTitle: { fontSize: 16, fontWeight: "800", color: "#111827", marginBottom: 4 },
-  actionDescription: { fontSize: 13, lineHeight: 20, color: "#6b7280" },
-  contactCard: { backgroundColor: "#f7fbf8", padding: 14, borderRadius: 12, marginTop: 10, borderLeftWidth: 3, borderLeftColor: "#075f43" },
-  contactName: { fontSize: 15, fontWeight: "800", color: "#111827", marginBottom: 4 },
-  contactDescription: { fontSize: 13, color: "#6b7280", marginBottom: 10, lineHeight: 18 },
+  actionTitle: { fontSize: 16, fontWeight: "800", color: t.text, marginBottom: 4 },
+  actionDescription: { fontSize: 13, lineHeight: 20, color: t.textMuted },
+  contactCard: { backgroundColor: t.brandTint, padding: 14, borderRadius: 12, marginTop: 10, borderLeftWidth: 3, borderLeftColor: t.brand },
+  contactName: { fontSize: 15, fontWeight: "800", color: t.text, marginBottom: 4 },
+  contactDescription: { fontSize: 13, color: t.textMuted, marginBottom: 10, lineHeight: 18 },
   contactButtons: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  contactButton: { backgroundColor: "#075f43", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
+  contactButton: { backgroundColor: t.brand, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
   contactButtonText: { color: "white", fontWeight: "800", fontSize: 12 },
-  contactButtonSecondary: { backgroundColor: "white", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: "#075f43" },
-  contactButtonSecondaryText: { color: "#075f43", fontWeight: "800", fontSize: 12 },
+  contactButtonSecondary: { backgroundColor: t.card, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: t.brand },
+  contactButtonSecondaryText: { color: t.brand, fontWeight: "800", fontSize: 12 },
   rightsList: { marginTop: 8, marginBottom: 8 },
-  rightItem: { fontSize: 13, lineHeight: 24, color: "#374151" },
-  footer: { textAlign: "center", color: "#9ca3af", fontSize: 12, marginTop: 20, paddingHorizontal: 20 },
+  rightItem: { fontSize: 13, lineHeight: 24, color: t.text },
+  footer: { textAlign: "center", color: t.textSubtle, fontSize: 12, marginTop: 20, paddingHorizontal: 20 },
 });

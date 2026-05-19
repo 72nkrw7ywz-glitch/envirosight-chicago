@@ -502,6 +502,46 @@ def fetch_airnow_stations():
     return result
 
 
+def fetch_airnow_forecast():
+    """Tomorrow + next few days of AQI forecast from AirNow for the Chicago area."""
+    url = (
+        "https://www.airnowapi.org/aq/forecast/latLong/"
+        f"?format=application/json&latitude={CHICAGO_LAT}&longitude={CHICAGO_LNG}"
+        f"&distance=25&API_KEY={AIRNOW_API_KEY}"
+    )
+    raw = http_get_json(url, timeout=15)
+    by_date_param: dict = {}
+    for obs in raw or []:
+        date = (obs.get("DateForecast") or "").strip()
+        if not date: continue
+        param = obs.get("ParameterName", "Unknown")
+        aqi = obs.get("AQI")
+        if aqi is None or aqi < 0:
+            continue
+        cat = obs.get("Category", {}) or {}
+        entry = {
+            "date": date, "aqi": aqi,
+            "category": cat.get("Name", "Unknown"),
+            "color": airnow_aqi_color(float(aqi)),
+            "discussion": obs.get("Discussion", "") or "",
+            "reporting_area": obs.get("ReportingArea", ""),
+        }
+        bucket = by_date_param.setdefault(date, {})
+        bucket[param] = entry
+    days = []
+    for date in sorted(by_date_param.keys()):
+        params = by_date_param[date]
+        if not params: continue
+        worst = max(params.values(), key=lambda v: v.get("aqi", 0))
+        days.append({
+            "date": date, "worst_aqi": worst["aqi"], "worst_category": worst["category"],
+            "worst_color": worst["color"], "worst_parameter": next(p for p, v in params.items() if v is worst),
+            "by_parameter": params,
+            "discussion": worst.get("discussion", ""),
+        })
+    return {"available": True if days else False, "days": days, "fetched_at_utc": datetime.now(timezone.utc).isoformat()}
+
+
 def fetch_airnow_summary():
     url = (
         "https://www.airnowapi.org/aq/observation/latLong/current/"
@@ -1001,6 +1041,7 @@ def home():
             "/api/airnow-summary", "/api/airnow-stations",
             "/api/tri-facilities", "/api/superfund-sites",
             "/api/public-health", "/api/weather", "/api/aqs-history",
+            "/api/airnow-forecast",
         ],
     }
 
@@ -1183,6 +1224,14 @@ def api_weather():
     except Exception as error:
         print(f"[Weather] Fetch failed: {error}")
         return {"available": False, "message": str(error)}
+
+
+@app.get("/api/airnow-forecast")
+def airnow_forecast():
+    try:
+        return fetch_airnow_forecast()
+    except Exception as error:
+        return {"available": False, "message": str(error), "days": []}
 
 
 @app.get("/api/aqs-history")

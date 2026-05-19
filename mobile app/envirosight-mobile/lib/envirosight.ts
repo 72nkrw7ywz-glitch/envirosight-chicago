@@ -113,16 +113,231 @@ export function buildQuintileColorFn(values: number[], reversed = false) {
   };
 }
 
-export const sharedStyles = {
-  page: { flex: 1, backgroundColor: "#f9fafb" },
-  hero: { backgroundColor: "#075f43", padding: 24, paddingTop: 32, paddingBottom: 28 },
-  heroTitle: { color: "white", fontSize: 28, fontWeight: "800" as const, marginBottom: 4 },
-  heroSubtitle: { color: "#86efac", fontSize: 15, fontWeight: "600" as const, marginBottom: 10 },
-  heroDescription: { color: "rgba(255,255,255,0.85)", fontSize: 13, lineHeight: 19 },
-  card: { backgroundColor: "white", margin: 20, marginTop: 16, marginBottom: 0, padding: 20, borderRadius: 14, shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
-  cardTitle: { fontSize: 20, fontWeight: "800" as const, color: "#075f43", marginBottom: 10 },
-  cardSubtitle: { fontSize: 13, color: "#6b7280", marginBottom: 14 },
-  bodyText: { fontSize: 14, color: "#374151", lineHeight: 20 },
-  footer: { textAlign: "center" as const, color: "#9ca3af", fontSize: 12, marginTop: 28, paddingHorizontal: 20 },
-  copyright: { textAlign: "center" as const, color: "#9ca3af", fontSize: 11, marginTop: 6, paddingHorizontal: 20, marginBottom: 40 },
+// ─── Geometry / distance ─────────────────────────────────────────────────────
+
+export function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 3958.8; // Earth radius in miles
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// ─── Saved addresses (My Places) ─────────────────────────────────────────────
+
+export type SavedPlace = { id: string; label: string; lat: number; lng: number; addedAt: string };
+const SAVED_PLACES_KEY = "envirosight:saved-places";
+
+export function loadSavedPlaces(): SavedPlace[] {
+  if (typeof window === "undefined" || !window.localStorage) return [];
+  try {
+    const raw = window.localStorage.getItem(SAVED_PLACES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function persistSavedPlaces(places: SavedPlace[]): void {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(SAVED_PLACES_KEY, JSON.stringify(places));
+  } catch {}
+}
+
+// ─── Personal health risk score ──────────────────────────────────────────────
+
+export type PersonalRisk = {
+  score: number;
+  level: "Low" | "Moderate" | "Elevated" | "High";
+  drivers: { label: string; weight: number; value: number }[];
 };
+
+export function computePersonalRisk(featureProps: any, currentAqi?: number | null): PersonalRisk {
+  const ses = getSesVulnerability(featureProps);
+  const heat = getHeatRisk(featureProps);
+  const green = getGreenRisk(featureProps);
+  const satAir = getSatelliteAirPollutionScore(featureProps);
+  const aqi = typeof currentAqi === "number" && Number.isFinite(currentAqi) ? currentAqi : NaN;
+  // Convert AQI (0-500 scale) into a roughly comparable 0-100 weight
+  const aqiContribution = Number.isFinite(aqi) ? Math.min(100, (aqi / 150) * 100) : satAir;
+
+  const drivers = [
+    { label: "Current air quality", weight: 0.30, value: aqiContribution },
+    { label: "Long-term air pollution", weight: 0.25, value: satAir },
+    { label: "Urban heat exposure", weight: 0.15, value: heat },
+    { label: "Limited green space", weight: 0.10, value: green },
+    { label: "Socioeconomic vulnerability", weight: 0.20, value: Number.isFinite(ses) ? ses : 0 },
+  ];
+
+  const total = drivers.reduce((s, d) => s + d.value * d.weight, 0);
+  const score = Math.round(total * 10) / 10;
+  const level: PersonalRisk["level"] =
+    score >= 70 ? "High" : score >= 50 ? "Elevated" : score >= 30 ? "Moderate" : "Low";
+
+  return {
+    score,
+    level,
+    drivers: drivers.sort((a, b) => b.value * b.weight - a.value * a.weight),
+  };
+}
+
+// ─── Theme tokens ────────────────────────────────────────────────────────────
+
+export type ThemeName = "light" | "dark";
+
+export type ThemeTokens = {
+  name: ThemeName;
+  bg: string;            // page background
+  card: string;          // card background
+  cardElevated: string;  // nested card / "raised" surfaces
+  border: string;        // dividers and outlines
+  borderStrong: string;  // emphasized borders
+  text: string;          // primary text
+  textMuted: string;     // labels, secondary text
+  textSubtle: string;    // captions, footer
+  brand: string;         // primary brand color (stays green)
+  brandTint: string;     // brand-tinted background (selected state, highlights)
+  accent: string;        // secondary accent (orange used for warnings)
+  danger: string;
+  success: string;
+  warning: string;
+  inputBg: string;
+  inputBorder: string;
+  shadowColor: string;
+  shadowOpacity: number;
+  overlay: string;
+};
+
+export const LIGHT_THEME: ThemeTokens = {
+  name: "light",
+  bg: "#f9fafb",
+  card: "#ffffff",
+  cardElevated: "#f9fafb",
+  border: "#f3f4f6",
+  borderStrong: "#e5e7eb",
+  text: "#111827",
+  textMuted: "#6b7280",
+  textSubtle: "#9ca3af",
+  brand: "#075f43",
+  brandTint: "#eef8f2",
+  accent: "#fb8c00",
+  danger: "#c62828",
+  success: "#10b981",
+  warning: "#f59e0b",
+  inputBg: "#f9fafb",
+  inputBorder: "#d1d5db",
+  shadowColor: "#000000",
+  shadowOpacity: 0.04,
+  overlay: "rgba(0,0,0,0.5)",
+};
+
+export const DARK_THEME: ThemeTokens = {
+  name: "dark",
+  bg: "#0b1014",
+  card: "#161b22",
+  cardElevated: "#1f2937",
+  border: "#1f2937",
+  borderStrong: "#374151",
+  text: "#f9fafb",
+  textMuted: "#9ca3af",
+  textSubtle: "#6b7280",
+  brand: "#10b981",
+  brandTint: "#10341f",
+  accent: "#fb923c",
+  danger: "#ef4444",
+  success: "#10b981",
+  warning: "#f59e0b",
+  inputBg: "#1f2937",
+  inputBorder: "#374151",
+  shadowColor: "#000000",
+  shadowOpacity: 0.4,
+  overlay: "rgba(0,0,0,0.7)",
+};
+
+const THEME_STORAGE_KEY = "envirosight:theme";
+
+export function loadThemePreference(): ThemeName | "auto" {
+  if (typeof window === "undefined" || !window.localStorage) return "auto";
+  try {
+    const v = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (v === "light" || v === "dark" || v === "auto") return v;
+  } catch {}
+  return "auto";
+}
+
+export function persistThemePreference(pref: ThemeName | "auto"): void {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try { window.localStorage.setItem(THEME_STORAGE_KEY, pref); } catch {}
+}
+
+export function getSystemPrefersDark(): boolean {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  try { return window.matchMedia("(prefers-color-scheme: dark)").matches; } catch { return false; }
+}
+
+export function resolveTheme(pref: ThemeName | "auto"): ThemeTokens {
+  if (pref === "dark") return DARK_THEME;
+  if (pref === "light") return LIGHT_THEME;
+  return getSystemPrefersDark() ? DARK_THEME : LIGHT_THEME;
+}
+
+export function makeSharedStyles(t: ThemeTokens) {
+  return {
+    page: { flex: 1, backgroundColor: t.bg },
+    hero: { backgroundColor: t.brand, padding: 24, paddingTop: 32, paddingBottom: 28 },
+    heroTitle: { color: "#ffffff", fontSize: 28, fontWeight: "800" as const, marginBottom: 4 },
+    heroSubtitle: { color: "#86efac", fontSize: 15, fontWeight: "600" as const, marginBottom: 10 },
+    heroDescription: { color: "rgba(255,255,255,0.85)", fontSize: 13, lineHeight: 19 },
+    card: { backgroundColor: t.card, margin: 20, marginTop: 16, marginBottom: 0, padding: 20, borderRadius: 14, shadowColor: t.shadowColor, shadowOpacity: t.shadowOpacity, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
+    cardTitle: { fontSize: 20, fontWeight: "800" as const, color: t.brand, marginBottom: 10 },
+    cardSubtitle: { fontSize: 13, color: t.textMuted, marginBottom: 14 },
+    bodyText: { fontSize: 14, color: t.text, lineHeight: 20 },
+    footer: { textAlign: "center" as const, color: t.textSubtle, fontSize: 12, marginTop: 28, paddingHorizontal: 20 },
+    copyright: { textAlign: "center" as const, color: t.textSubtle, fontSize: 11, marginTop: 6, paddingHorizontal: 20, marginBottom: 40 },
+  };
+}
+
+/**
+ * Hook returning the active theme + a setter. Subscribes to OS theme changes when pref is "auto".
+ * Use this once near the top of each screen, then derive styles via makeSharedStyles(theme) or createStyles(theme).
+ */
+import { useEffect, useState, useCallback } from "react";
+
+export function useEnviroTheme() {
+  const [pref, setPref] = useState<ThemeName | "auto">(loadThemePreference());
+  const [system, setSystem] = useState<boolean>(getSystemPrefersDark());
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) => setSystem(e.matches);
+    try {
+      mq.addEventListener("change", handler);
+      return () => mq.removeEventListener("change", handler);
+    } catch {
+      // older browsers
+      mq.addListener(handler);
+      return () => mq.removeListener(handler);
+    }
+  }, []);
+
+  const theme: ThemeTokens =
+    pref === "dark" ? DARK_THEME :
+    pref === "light" ? LIGHT_THEME :
+    system ? DARK_THEME : LIGHT_THEME;
+
+  const setThemePreference = useCallback((next: ThemeName | "auto") => {
+    setPref(next);
+    persistThemePreference(next);
+  }, []);
+
+  return { theme, pref, setThemePreference };
+}
+
+// Legacy export — kept so existing imports don't break. Returns the light theme styles.
+export const sharedStyles = makeSharedStyles(LIGHT_THEME);
