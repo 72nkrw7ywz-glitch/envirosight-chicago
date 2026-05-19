@@ -2,31 +2,38 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   View, Text, TextInput, ScrollView, StyleSheet, Platform, Pressable, ActivityIndicator,
 } from "react-native";
+import {
+  API_BASE,
+  AirNowStation,
+  ColorByMetric,
+  FeatureProperties,
+  GeoJsonFeature,
+  METRIC_LABELS,
+  RISK_COLORS,
+  SuperfundSite,
+  TriFacility,
+  buildQuintileColorFn,
+  formatNumber,
+  getCommunity,
+  getCrowdedHousing,
+  getDisplayRiskScore,
+  getGreenRisk,
+  getHeatRisk,
+  getIncome,
+  getMetricValue,
+  getNoHsDiploma,
+  getPoverty,
+  getRiskLevel,
+  getSatelliteAirPollutionScore,
+  getSesVulnerability,
+  getUnemployment,
+  getValue,
+  sharedStyles,
+  toNumber,
+} from "@/lib/envirosight";
 
-type FeatureProperties = { community?: string; COMMUNITY?: string; [key: string]: any };
-type GeoJsonFeature = { type: string; properties: FeatureProperties; geometry: any };
-type ColorByMetric = "risk" | "poverty" | "income" | "unemployment" | "ses_vulnerability";
-type BasemapType = "street" | "satellite";
-type InsightsTab = "distribution" | "search" | "health" | "ej";
-
-type AirNowStation = {
-  latitude: number; longitude: number; site_name: string; agency: string;
-  worst_aqi: number; worst_parameter: string; color: string; category: string;
-  readings: Record<string, { aqi: number; value: number; unit: string; utc: string }>;
-};
-type AirNowSummary = {
-  available: boolean; worst_aqi?: number; worst_category?: string; worst_color?: string;
-  observed_at?: string; reporting_area?: string;
-  by_parameter?: Record<string, { aqi: number; category: string }>;
-};
-type TriFacility = {
-  id: string; name: string; address: string; city: string; zip: string;
-  industry: string; latitude: number; longitude: number;
-};
-type SuperfundSite = {
-  id: string; name: string; zip: string; status: string; latitude: number; longitude: number;
-};
 type Pin = { lat: number; lng: number; label: string };
+type BasemapType = "street" | "satellite";
 
 type WeatherCondition = { code: number; label: string; emoji: string };
 type WeatherCurrent = {
@@ -38,44 +45,33 @@ type WeatherDay = {
   date: string; temp_max_f: number; temp_min_f: number; precip_prob_pct: number;
   wind_max_mph: number; uv_max: number; sunrise: string; sunset: string; weather: WeatherCondition;
 };
+type WeatherAlert = {
+  id: string; event: string; severity: string; urgency: string;
+  headline: string; description: string; instruction: string;
+  sent: string; expires: string; sender_name: string;
+};
 type WeatherData = {
   available: boolean; current?: WeatherCurrent; daily?: WeatherDay[]; location?: string;
-};
-
-const RISK_COLORS = {
-  veryLow: "#2e7d32", low: "#9ccc65", medium: "#fdd835",
-  high: "#fb8c00", veryHigh: "#c62828",
-};
-
-const API_BASE = "https://envirosight-chicago.onrender.com";
-
-const METRIC_LABELS: Record<ColorByMetric, string> = {
-  risk: "Environmental Risk",
-  poverty: "Poverty Rate",
-  income: "Income (lower = darker)",
-  unemployment: "Unemployment Rate",
-  ses_vulnerability: "Socioeconomic Vulnerability",
+  alerts?: WeatherAlert[];
 };
 
 function windDirectionLabel(deg: number): string {
   if (!Number.isFinite(deg)) return "—";
-  const dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+  const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
   return dirs[Math.round(deg / 22.5) % 16];
 }
 
 function formatHour(isoTime: string): string {
   if (!isoTime) return "—";
   try {
-    const d = new Date(isoTime);
-    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return new Date(isoTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   } catch { return "—"; }
 }
 
 function shortDayName(dateStr: string): string {
   if (!dateStr) return "—";
   try {
-    const d = new Date(dateStr + "T12:00:00");
-    return d.toLocaleDateString([], { weekday: "short" });
+    return new Date(dateStr + "T12:00:00").toLocaleDateString([], { weekday: "short" });
   } catch { return "—"; }
 }
 
@@ -116,10 +112,25 @@ function pointInGeometry(lat: number, lng: number, geometry: any): boolean {
   return false;
 }
 
+const meteoconUrl = (code: number, isDay: boolean = true): string => {
+  const base = "https://cdn.jsdelivr.net/gh/basmilius/weather-icons/production/fill/all";
+  const dn = isDay ? "day" : "night";
+  const map: Record<number, string> = {
+    0: `clear-${dn}`, 1: `clear-${dn}`, 2: `partly-cloudy-${dn}`, 3: `overcast-${dn}`,
+    45: `fog-${dn}`, 48: `fog-${dn}`, 51: "drizzle", 53: "drizzle", 55: "drizzle",
+    56: "sleet", 57: "sleet", 61: "rain", 63: "rain", 65: "rain", 66: "sleet", 67: "sleet",
+    71: "snow", 73: "snow", 75: "snow", 77: "snow",
+    80: `partly-cloudy-${dn}-rain`, 81: "rain", 82: "thunderstorms-rain",
+    85: `partly-cloudy-${dn}-snow`, 86: "snow",
+    95: "thunderstorms", 96: "thunderstorms-rain", 99: "thunderstorms-rain",
+  };
+  const icon = map[code] ?? `clear-${dn}`;
+  return `${base}/${icon}.svg`;
+};
+
 export default function HomeScreen() {
   const [geoData, setGeoData] = useState<any>(null);
   const [airnowStations, setAirnowStations] = useState<AirNowStation[]>([]);
-  const [airnowSummary, setAirnowSummary] = useState<AirNowSummary | null>(null);
   const [triFacilities, setTriFacilities] = useState<TriFacility[]>([]);
   const [superfundSites, setSuperfundSites] = useState<SuperfundSite[]>([]);
   const [weather, setWeather] = useState<WeatherData | null>(null);
@@ -142,17 +153,8 @@ export default function HomeScreen() {
   const [dataStatus, setDataStatus] = useState<"loading" | "live" | "backup" | "error">("loading");
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
 
-  const [compareA, setCompareA] = useState("");
-  const [compareB, setCompareB] = useState("");
-  const [showCompare, setShowCompare] = useState(false);
-  const [showMethodology, setShowMethodology] = useState(false);
-  const [showSuperfundList, setShowSuperfundList] = useState(false);
-
-  const [insightsTab, setInsightsTab] = useState<InsightsTab>("distribution");
-  const [insightsSearch, setInsightsSearch] = useState("");
-
   useEffect(() => {
-    (async function loadRiskMap() {
+    (async () => {
       try {
         const res = await fetch(`${API_BASE}/api/current-risk-map`);
         if (!res.ok) throw new Error(`Backend ${res.status}`);
@@ -182,12 +184,11 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
-    (async function loadExtras() {
+    (async () => {
       try { await fetch(`${API_BASE}/health`); } catch {}
       try {
-        const [s, sum, tri, sf, w] = await Promise.all([
+        const [s, tri, sf, w] = await Promise.all([
           fetch(`${API_BASE}/api/airnow-stations`),
-          fetch(`${API_BASE}/api/airnow-summary`),
           fetch(`${API_BASE}/api/tri-facilities`, { signal: AbortSignal.timeout(60000) }),
           fetch(`${API_BASE}/api/superfund-sites`),
           fetch(`${API_BASE}/api/weather`),
@@ -196,7 +197,6 @@ export default function HomeScreen() {
           const d = await s.json();
           if (d.available && Array.isArray(d.stations)) setAirnowStations(d.stations);
         }
-        if (sum.ok) setAirnowSummary(await sum.json());
         if (tri.ok) {
           const d = await tri.json();
           if (d.available && Array.isArray(d.facilities)) setTriFacilities(d.facilities);
@@ -214,40 +214,6 @@ export default function HomeScreen() {
       }
     })();
   }, []);
-
-  const getValue = (p: any, keys: string[], fb: any = "N/A") => {
-    for (const k of keys) if (p && p[k] !== undefined && p[k] !== null && p[k] !== "") return p[k];
-    return fb;
-  };
-  const toNumber = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  const formatNumber = (v: any, d = 1) => { const n = Number(v); return Number.isFinite(n) ? n.toFixed(d) : "N/A"; };
-  const getCommunity = (p: any) => String(getValue(p, ["community", "COMMUNITY", "community_area", "community_n", "name"], "Unknown"));
-  const getOriginalRiskScore = (p: any) => toNumber(getValue(p, ["new_risk_s", "new_risk_score", "risk_score", "risk_scor", "new_risk", "risk"], 0));
-  const getSatelliteAirPollutionScore = (p: any) => toNumber(getValue(p, ["satellite_air_pollution_score"], 0));
-  const getHeatRisk = (p: any) => toNumber(getValue(p, ["heat_exposure_score"], 0));
-  const getGreenRisk = (p: any) => toNumber(getValue(p, ["green_space_risk_score"], 0));
-  const getDisplayRiskScore = (p: any) => {
-    const d = toNumber(getValue(p, ["display_risk_score"], 0));
-    if (d > 0) return d;
-    return getOriginalRiskScore(p) * 0.7 + getSatelliteAirPollutionScore(p) * 0.1 + getHeatRisk(p) * 0.1 + getGreenRisk(p) * 0.1;
-  };
-  const getRiskLevel = (s: number) => s >= 70 ? "High Risk" : s >= 40 ? "Medium Risk" : "Low Risk";
-  const getPoverty = (p: any) => toNumber(getValue(p, ["ph_below_poverty_level"], NaN));
-  const getUnemployment = (p: any) => toNumber(getValue(p, ["ph_unemployment"], NaN));
-  const getNoHsDiploma = (p: any) => toNumber(getValue(p, ["ph_no_high_school_diploma"], NaN));
-  const getIncome = (p: any) => toNumber(getValue(p, ["ph_per_capita_income"], NaN));
-  const getCrowdedHousing = (p: any) => toNumber(getValue(p, ["ph_crowded_housing"], NaN));
-  const getSesVulnerability = (p: any) => toNumber(getValue(p, ["ph_ses_vulnerability_score"], NaN));
-
-  const getMetricValue = (p: any, metric: ColorByMetric): number => {
-    switch (metric) {
-      case "risk": return getDisplayRiskScore(p);
-      case "poverty": return getPoverty(p);
-      case "income": return getIncome(p);
-      case "unemployment": return getUnemployment(p);
-      case "ses_vulnerability": return getSesVulnerability(p);
-    }
-  };
 
   const explain = (p: any): string => {
     const name = getCommunity(p);
@@ -333,23 +299,17 @@ export default function HomeScreen() {
     setAddressQuery(""); setGeocodeError(null);
   };
 
-  const openSuperfundReport = (siteId: string) => {
-    const epaUrl = `https://cumulis.epa.gov/supercpad/SiteProfiles/index.cfm?fuseaction=second.scs&id=${siteId}`;
-    if (typeof window !== "undefined") {
-      window.open(epaUrl, "_blank");
-    }
-  };
-
-  const handleTopNeighborhoodClick = (name: string) => {
-    setSearch(name);
-    if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  };
-
   const allNeighborhoods: FeatureProperties[] = geoData?.features?.map((f: GeoJsonFeature) => f.properties) || [];
-  const ranked = useMemo(() => [...allNeighborhoods].sort((a, b) => getDisplayRiskScore(b) - getDisplayRiskScore(a)), [geoData]);
+  const ranked = useMemo(
+    () => [...allNeighborhoods].sort((a, b) => getDisplayRiskScore(b) - getDisplayRiskScore(a)),
+    [geoData]
+  );
 
+  const isReversed = colorBy === "income";
+  const getMetricColor = useMemo(
+    () => buildQuintileColorFn(ranked.map((p) => getMetricValue(p, colorBy)), isReversed),
+    [ranked, colorBy, isReversed]
+  );
   const quintiles = useMemo(() => {
     if (ranked.length === 0) return [0, 0, 0, 0];
     const values = ranked.map((p) => getMetricValue(p, colorBy)).filter(Number.isFinite).sort((a, b) => a - b);
@@ -357,37 +317,9 @@ export default function HomeScreen() {
     return [0.2, 0.4, 0.6, 0.8].map((p) => values[Math.floor(values.length * p)]);
   }, [ranked, colorBy]);
 
-  const isReversed = colorBy === "income";
-
-  const getMetricColor = (score: number): string => {
-    if (!Number.isFinite(score)) return "#cccccc";
-    let bin = 0;
-    if (score <= quintiles[0]) bin = 0;
-    else if (score <= quintiles[1]) bin = 1;
-    else if (score <= quintiles[2]) bin = 2;
-    else if (score <= quintiles[3]) bin = 3;
-    else bin = 4;
-    if (isReversed) bin = 4 - bin;
-    return [RISK_COLORS.veryLow, RISK_COLORS.low, RISK_COLORS.medium, RISK_COLORS.high, RISK_COLORS.veryHigh][bin];
-  };
-
   const selected = search.length > 0
     ? allNeighborhoods.find((item) => getCommunity(item).toLowerCase().includes(search.toLowerCase())) || null
     : null;
-
-  const totalAreas = ranked.length;
-  const avgRisk = totalAreas > 0 ? ranked.reduce((s, i) => s + getDisplayRiskScore(i), 0) / totalAreas : 0;
-
-  const medianPoverty = useMemo(() => {
-    const vals = ranked.map(getPoverty).filter(Number.isFinite).sort((a, b) => a - b);
-    if (vals.length === 0) return null;
-    return vals[Math.floor(vals.length / 2)];
-  }, [ranked]);
-
-  const top10 = ranked.slice(0, 10);
-  const top10Max = top10[0] ? getDisplayRiskScore(top10[0]) : 100;
-  const areaA = allNeighborhoods.find((n) => getCommunity(n).toLowerCase() === compareA.toLowerCase());
-  const areaB = allNeighborhoods.find((n) => getCommunity(n).toLowerCase() === compareB.toLowerCase());
 
   const relativeTime = useMemo(() => {
     if (!generatedAt) return null;
@@ -437,7 +369,7 @@ export default function HomeScreen() {
       function getValue(p, keys, fb) { for (const k of keys) if (p[k] !== undefined && p[k] !== null && p[k] !== "") return p[k]; return fb; }
       function toNum(v) { const n = Number(v); return Number.isFinite(n) ? n : NaN; }
       function fmt(v, d) { const n = Number(v); return Number.isFinite(n) ? n.toFixed(d || 1) : "N/A"; }
-      function getCommunity(p) { return String(getValue(p, ["community", "COMMUNITY"], "Unknown")); }
+      function getCommunity(p) { return String(getValue(p, ["community","COMMUNITY"], "Unknown")); }
       function getDisplay(p) {
         const d = toNum(getValue(p, ["display_risk_score"], 0));
         if (d > 0) return d;
@@ -579,74 +511,14 @@ export default function HomeScreen() {
   const statusColor = dataStatus === "live" ? "#2e7d32" : dataStatus === "backup" ? "#f59e0b" : dataStatus === "error" ? "#c62828" : "#6b7280";
   const weatherBg = weather?.current?.is_day === false ? "#0f172a" : "#075f43";
 
-  const meteoconUrl = (code: number, isDay: boolean = true): string => {
-    const base = "https://cdn.jsdelivr.net/gh/basmilius/weather-icons/production/fill/all";
-    const dn = isDay ? "day" : "night";
-    const map: Record<number, string> = {
-      0: `clear-${dn}`, 1: `clear-${dn}`, 2: `partly-cloudy-${dn}`, 3: `overcast-${dn}`,
-      45: `fog-${dn}`, 48: `fog-${dn}`, 51: "drizzle", 53: "drizzle", 55: "drizzle",
-      56: "sleet", 57: "sleet", 61: "rain", 63: "rain", 65: "rain", 66: "sleet", 67: "sleet",
-      71: "snow", 73: "snow", 75: "snow", 77: "snow",
-      80: `partly-cloudy-${dn}-rain`, 81: "rain", 82: "thunderstorms-rain",
-      85: `partly-cloudy-${dn}-snow`, 86: "snow",
-      95: "thunderstorms", 96: "thunderstorms-rain", 99: "thunderstorms-rain",
-    };
-    const icon = map[code] ?? `clear-${dn}`;
-    return `${base}/${icon}.svg`;
-  };
-
-  const lowCount = ranked.filter((a) => getDisplayRiskScore(a) < 40).length;
-  const medCount = ranked.filter((a) => {
-    const s = getDisplayRiskScore(a);
-    return s >= 40 && s < 70;
-  }).length;
-  const highCount = ranked.filter((a) => getDisplayRiskScore(a) >= 70).length;
-  const totalForDist = ranked.length || 1;
-  const lowPct = (lowCount / totalForDist) * 100;
-  const medPct = (medCount / totalForDist) * 100;
-  const highPct = (highCount / totalForDist) * 100;
-
-  const insightSearchMatches = insightsSearch.length > 0
-    ? ranked.filter((a) => getCommunity(a).toLowerCase().includes(insightsSearch.toLowerCase())).slice(0, 5)
-    : [];
-
-  const highRiskAreas = ranked.filter((a) => getDisplayRiskScore(a) >= 70);
-  const lowRiskAreas = ranked.filter((a) => getDisplayRiskScore(a) < 40);
-  const avgArr = (arr: any[], fn: (a: any) => number) => {
-    const vals = arr.map(fn).filter(Number.isFinite);
-    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : NaN;
-  };
-  const highPoverty = avgArr(highRiskAreas, getPoverty);
-  const lowPoverty = avgArr(lowRiskAreas, getPoverty);
-  const highUnemp = avgArr(highRiskAreas, getUnemployment);
-  const lowUnemp = avgArr(lowRiskAreas, getUnemployment);
-  const highIncome = avgArr(highRiskAreas, getIncome);
-  const lowIncome = avgArr(lowRiskAreas, getIncome);
-
-  const withData = ranked.filter((a) => Number.isFinite(getPoverty(a)));
-  const highPovHighRisk = withData.filter((a) => getPoverty(a) >= 20 && getDisplayRiskScore(a) >= 60).length;
-  const lowPovLowRisk = withData.filter((a) => getPoverty(a) < 10 && getDisplayRiskScore(a) < 40).length;
-  const sortedByRisk = [...withData].sort((a, b) => getDisplayRiskScore(b) - getDisplayRiskScore(a));
-  const top10AvgPoverty = (() => {
-    const top = sortedByRisk.slice(0, 10);
-    const vals = top.map(getPoverty).filter(Number.isFinite);
-    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
-  })();
-  const bottom10AvgPoverty = (() => {
-    const bot = sortedByRisk.slice(-10);
-    const vals = bot.map(getPoverty).filter(Number.isFinite);
-    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
-  })();
-  const povertyGap = top10AvgPoverty - bottom10AvgPoverty;
-
   return (
-    <ScrollView style={styles.page}>
-      <View style={styles.hero}>
-        <Text style={styles.title}>EnviroSight Chicago</Text>
-        <Text style={styles.subtitle}>Environmental Risk + Health + Equity</Text>
-        <Text style={styles.description}>
-          Find your address's environmental risk. Satellite data, EPA ground sensors, toxic-release facilities,
-          Superfund sites, public health statistics, and live weather across all 77 Chicago community areas.
+    <ScrollView style={sharedStyles.page}>
+      <View style={sharedStyles.hero}>
+        <Text style={sharedStyles.heroTitle}>EnviroSight Chicago</Text>
+        <Text style={sharedStyles.heroSubtitle}>Environmental Risk + Health + Equity</Text>
+        <Text style={sharedStyles.heroDescription}>
+          Find your address's environmental risk. Satellite, EPA sensors, Superfund sites,
+          public health data, and live weather across all 77 Chicago community areas.
         </Text>
       </View>
 
@@ -664,6 +536,24 @@ export default function HomeScreen() {
           {dataStatus === "live" && relativeTime ? `Updated ${relativeTime} · ${dataSource}` : dataSource}
         </Text>
       </View>
+
+      {weather?.alerts && weather.alerts.length > 0 && (
+        <View style={styles.alertsCard}>
+          {weather.alerts.map((alert) => (
+            <View key={alert.id} style={[
+              styles.alertItem,
+              { borderLeftColor: alert.severity === "Extreme" || alert.severity === "Severe" ? "#c62828" : "#f59e0b" }
+            ]}>
+              <Text style={styles.alertEvent}>⚠ {alert.event}</Text>
+              <Text style={styles.alertHeadline}>{alert.headline}</Text>
+              {alert.instruction && <Text style={styles.alertInstruction}>{alert.instruction}</Text>}
+              <Text style={styles.alertMeta}>
+                {alert.severity} · {alert.urgency} · {alert.sender_name}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
 
       {weather?.available && weather.current && (
         <View style={[styles.weatherCard, { backgroundColor: weatherBg }]}>
@@ -726,39 +616,10 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {airnowSummary?.available && (
-        <View style={[styles.aqiBanner, { borderLeftColor: airnowSummary.worst_color }]}>
-          <View style={styles.aqiHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.aqiLabel}>LIVE EPA AIR QUALITY · {airnowSummary.reporting_area?.toUpperCase()}</Text>
-              <Text style={[styles.aqiValue, { color: airnowSummary.worst_color }]}>{airnowSummary.worst_aqi} AQI</Text>
-              <Text style={styles.aqiCategory}>{airnowSummary.worst_category}</Text>
-            </View>
-            <View style={styles.aqiParams}>
-              {airnowSummary.by_parameter && Object.entries(airnowSummary.by_parameter).map(([param, data]) => (
-                <View key={param} style={styles.aqiParamRow}>
-                  <Text style={styles.aqiParamName}>{param}</Text>
-                  <Text style={styles.aqiParamValue}>{data.aqi}</Text>
-                </View>
-              ))}
-            </View>
-          </View>
-          <Text style={styles.aqiTimestamp}>Observed {airnowSummary.observed_at}</Text>
-        </View>
-      )}
-
-      <View style={styles.kpiGrid}>
-        <KpiCard title="Community Areas" value={totalAreas.toString()} accent="#075f43" />
-        <KpiCard title="Avg Risk Score" value={avgRisk.toFixed(1)} accent="#075f43" />
-        <KpiCard title="Median Poverty" value={medianPoverty !== null ? `${medianPoverty.toFixed(1)}%` : "—"} accent="#fb8c00" />
-        <KpiCard title="TRI Facilities" value={triFacilities.length.toString()} accent="#6b2e8c" />
-        <KpiCard title="Superfund Sites" value={superfundSites.length.toString()} accent="#c62828" />
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Find Your Address</Text>
-        <Text style={styles.bodyText}>
-          Enter a Chicago address or use your device's location to see the environmental risk for your neighborhood.
+      <View style={sharedStyles.card}>
+        <Text style={sharedStyles.cardTitle}>Find Your Address</Text>
+        <Text style={sharedStyles.cardSubtitle}>
+          Enter a Chicago address or use your device's location to see your neighborhood's environmental risk.
         </Text>
         <View style={styles.addressInputRow}>
           <TextInput
@@ -809,7 +670,7 @@ export default function HomeScreen() {
         {pin && !pinMatchedFeature && (
           <View style={styles.pinResult}>
             <Text style={styles.pinResultLabel}>📍 {pin.label}</Text>
-            <Text style={styles.bodyText}>This location is outside Chicago's 77 community areas.</Text>
+            <Text style={sharedStyles.bodyText}>This location is outside Chicago's 77 community areas.</Text>
           </View>
         )}
       </View>
@@ -823,8 +684,8 @@ export default function HomeScreen() {
       />
 
       {search.length > 0 && selected && (
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>{getCommunity(selected)}</Text>
+        <View style={sharedStyles.card}>
+          <Text style={sharedStyles.cardTitle}>{getCommunity(selected)}</Text>
           <View style={styles.scoreRow}>
             <Text style={[styles.bigScore, { color: getMetricColor(getDisplayRiskScore(selected)) }]}>
               {formatNumber(getDisplayRiskScore(selected))}
@@ -855,8 +716,25 @@ export default function HomeScreen() {
               )}
             </>
           ) : (
-            <Text style={styles.bodyText}>No public health data matched for this area.</Text>
+            <Text style={sharedStyles.bodyText}>No public health data matched for this area.</Text>
           )}
+          <Text style={styles.sectionTitle}>Public Health Indicators (Chicago Health Atlas)</Text>
+          {Number.isFinite(toNumber(getValue(selected, ["ph_infant_mortality_rate"], NaN))) && (
+            <InfoRow label="Infant Mortality Rate" value={`${toNumber(getValue(selected, ["ph_infant_mortality_rate"], 0)).toFixed(1)} per 1,000`} />
+          )}
+          {Number.isFinite(toNumber(getValue(selected, ["ph_low_birth_weight"], NaN))) && (
+            <InfoRow label="Low Birth Weight" value={`${toNumber(getValue(selected, ["ph_low_birth_weight"], 0)).toFixed(1)}%`} />
+          )}
+          {Number.isFinite(toNumber(getValue(selected, ["ph_diabetes_related"], NaN))) && (
+            <InfoRow label="Diabetes-Related Deaths" value={`${toNumber(getValue(selected, ["ph_diabetes_related"], 0)).toFixed(1)} per 100k`} />
+          )}
+          {Number.isFinite(toNumber(getValue(selected, ["ph_lung_cancer"], NaN))) && (
+            <InfoRow label="Lung Cancer Deaths" value={`${toNumber(getValue(selected, ["ph_lung_cancer"], 0)).toFixed(1)} per 100k`} />
+          )}
+          {Number.isFinite(toNumber(getValue(selected, ["ph_childhood_lead_poisoning"], NaN))) && (
+            <InfoRow label="Childhood Lead Poisoning" value={`${toNumber(getValue(selected, ["ph_childhood_lead_poisoning"], 0)).toFixed(1)}%`} />
+          )}
+
           <Text style={styles.sectionTitle}>Pollutant Breakdown</Text>
           <ScoreBar label="NO₂" value={toNumber(getValue(selected, ["no2_pollution_score"], 0))} />
           <ScoreBar label="PM2.5 Proxy (AOD)" value={toNumber(getValue(selected, ["pm25_proxy_pollution_score"], 0))} />
@@ -867,15 +745,15 @@ export default function HomeScreen() {
       )}
 
       {search.length > 0 && !selected && (
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Not found</Text>
-          <Text style={styles.bodyText}>"{search}" doesn't match any Chicago community area.</Text>
+        <View style={sharedStyles.card}>
+          <Text style={sharedStyles.cardTitle}>Not found</Text>
+          <Text style={sharedStyles.bodyText}>"{search}" doesn't match any Chicago community area.</Text>
         </View>
       )}
 
       <View style={styles.mapCard}>
         <View style={styles.mapHeader}>
-          <Text style={styles.cardTitle}>Map · Color by {METRIC_LABELS[colorBy]}</Text>
+          <Text style={sharedStyles.cardTitle}>Map · {METRIC_LABELS[colorBy]}</Text>
           <View style={styles.toggleGroup}>
             <Pressable onPress={() => setBasemap(basemap === "street" ? "satellite" : "street")} style={styles.basemapToggle}>
               <Text style={styles.basemapToggleText}>{basemap === "street" ? "🛰  Satellite" : "🗺  Street"}</Text>
@@ -905,13 +783,6 @@ export default function HomeScreen() {
             </Pressable>
           ))}
         </View>
-        <Text style={styles.bodyText}>
-          {colorBy === "risk" && "Environmental risk choropleth. Switch to Poverty to see environmental justice patterns."}
-          {colorBy === "poverty" && "Darker areas = higher poverty rate."}
-          {colorBy === "income" && "Darker areas = lower per-capita income."}
-          {colorBy === "unemployment" && "Darker areas = higher unemployment."}
-          {colorBy === "ses_vulnerability" && "Composite vulnerability index."}
-        </Text>
         {Platform.OS === "web" && geoData ? (
           React.createElement("iframe", {
             srcDoc: mapHtml,
@@ -919,297 +790,17 @@ export default function HomeScreen() {
             style: { width: "100%", height: 700, border: "none", borderRadius: 12 },
           })
         ) : (
-          <Text style={styles.bodyText}>Map only available on web.</Text>
+          <Text style={sharedStyles.bodyText}>Map only available on web.</Text>
         )}
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Top 10 Highest-Risk Neighborhoods</Text>
-        <Text style={styles.bodyText}>Tap a neighborhood to see its full details.</Text>
-        {top10.map((item, i) => {
-          const score = getDisplayRiskScore(item);
-          const width = (score / top10Max) * 100;
-          return (
-            <Pressable
-              key={getCommunity(item)}
-              onPress={() => handleTopNeighborhoodClick(getCommunity(item))}
-              style={({ pressed }) => [styles.chartRowPressable, pressed && { opacity: 0.6 }]}
-            >
-              <Text style={styles.chartRank}>#{i + 1}</Text>
-              <Text style={styles.chartName} numberOfLines={1}>{getCommunity(item)}</Text>
-              <View style={styles.chartBarContainer}>
-                <View style={[styles.chartBar, { width: `${width}%`, backgroundColor: getMetricColor(score) }]} />
-                <Text style={styles.chartScore}>{score.toFixed(1)}</Text>
-              </View>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      {superfundSites.length > 0 && (
-        <View style={styles.card}>
-          <View style={styles.compareHeader}>
-            <Text style={styles.cardTitle}>☢ Superfund Sites ({superfundSites.length})</Text>
-            <Pressable onPress={() => setShowSuperfundList(!showSuperfundList)} style={styles.toggleButtonSmall}>
-              <Text style={styles.toggleButtonTextSmall}>{showSuperfundList ? "Hide" : "Show"}</Text>
-            </Pressable>
-          </View>
-          <Text style={styles.bodyText}>EPA-designated contaminated sites requiring cleanup in Chicago. Tap a site to view EPA's full report.</Text>
-          {showSuperfundList && superfundSites.map((s) => (
-            <Pressable
-              key={s.id}
-              onPress={() => openSuperfundReport(s.id)}
-              style={({ pressed }) => [styles.superfundRowPressable, pressed && { opacity: 0.6 }]}
-            >
-              <View style={[styles.superfundDot, { backgroundColor: s.status === "Final NPL" ? "#c62828" : "#fb8c00" }]} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.superfundName}>{s.name}</Text>
-                <Text style={styles.superfundStatus}>{s.status} · ZIP {s.zip} · Tap for EPA report ↗</Text>
-              </View>
-            </Pressable>
-          ))}
-        </View>
-      )}
-
-      <View style={styles.card}>
-        <View style={styles.compareHeader}>
-          <Text style={styles.cardTitle}>Compare Two Neighborhoods</Text>
-          <Pressable onPress={() => setShowCompare(!showCompare)} style={styles.toggleButtonSmall}>
-            <Text style={styles.toggleButtonTextSmall}>{showCompare ? "Hide" : "Show"}</Text>
-          </Pressable>
-        </View>
-        {showCompare && (
-          <>
-            <View style={styles.compareInputs}>
-              <TextInput style={styles.compareInput} placeholder="First area" placeholderTextColor="#9ca3af" value={compareA} onChangeText={setCompareA} />
-              <TextInput style={styles.compareInput} placeholder="Second area" placeholderTextColor="#9ca3af" value={compareB} onChangeText={setCompareB} />
-            </View>
-            {areaA && areaB && (
-              <View style={styles.compareGrid}>
-                <ComparisonHeader nameA={getCommunity(areaA)} nameB={getCommunity(areaB)} />
-                <ComparisonRow label="Display Risk" valueA={getDisplayRiskScore(areaA)} valueB={getDisplayRiskScore(areaB)} />
-                <ComparisonRow label="Air Pollution" valueA={getSatelliteAirPollutionScore(areaA)} valueB={getSatelliteAirPollutionScore(areaB)} />
-                <ComparisonRow label="Heat Exposure" valueA={getHeatRisk(areaA)} valueB={getHeatRisk(areaB)} />
-                <ComparisonRow label="Green Space Risk" valueA={getGreenRisk(areaA)} valueB={getGreenRisk(areaB)} />
-                <ComparisonRow label="Poverty %" valueA={getPoverty(areaA)} valueB={getPoverty(areaB)} />
-                <ComparisonRow label="Unemployment %" valueA={getUnemployment(areaA)} valueB={getUnemployment(areaB)} />
-              </View>
-            )}
-          </>
-        )}
-      </View>
-
-      <View style={styles.card}>
-        <View style={styles.insightsHeader}>
-          <Text style={styles.cardTitle}>Chicago Insights</Text>
-          <View style={styles.insightsTabRow}>
-            {(["distribution", "search", "health", "ej"] as InsightsTab[]).map((tab) => (
-              <Pressable
-                key={tab}
-                onPress={() => setInsightsTab(tab)}
-                style={[styles.insightsTab, insightsTab === tab && styles.insightsTabActive]}
-              >
-                <Text style={[styles.insightsTabText, insightsTab === tab && styles.insightsTabTextActive]}>
-                  {tab === "distribution" && "📊 Distribution"}
-                  {tab === "search" && "🔍 Search"}
-                  {tab === "health" && "🏥 Health"}
-                  {tab === "ej" && "⚖️ Equity"}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-
-        {insightsTab === "distribution" && (
-          <View>
-            <Text style={styles.bodyText}>
-              Of Chicago's {totalForDist} community areas, here's how environmental risk is distributed:
-            </Text>
-            <View style={styles.distRow}>
-              <View style={styles.distCard}>
-                <Text style={[styles.distValue, { color: "#2e7d32" }]}>{lowCount}</Text>
-                <Text style={styles.distLabel}>Low Risk</Text>
-                <Text style={styles.distSubtext}>{lowPct.toFixed(0)}% of areas</Text>
-              </View>
-              <View style={styles.distCard}>
-                <Text style={[styles.distValue, { color: "#fb8c00" }]}>{medCount}</Text>
-                <Text style={styles.distLabel}>Medium Risk</Text>
-                <Text style={styles.distSubtext}>{medPct.toFixed(0)}% of areas</Text>
-              </View>
-              <View style={styles.distCard}>
-                <Text style={[styles.distValue, { color: "#c62828" }]}>{highCount}</Text>
-                <Text style={styles.distLabel}>High Risk</Text>
-                <Text style={styles.distSubtext}>{highPct.toFixed(0)}% of areas</Text>
-              </View>
-            </View>
-            <View style={styles.distBarTrack}>
-              <View style={[styles.distBarSeg, { width: `${lowPct}%`, backgroundColor: "#2e7d32" }]} />
-              <View style={[styles.distBarSeg, { width: `${medPct}%`, backgroundColor: "#fb8c00" }]} />
-              <View style={[styles.distBarSeg, { width: `${highPct}%`, backgroundColor: "#c62828" }]} />
-            </View>
-            <Text style={styles.insightCaption}>
-              Risk levels are based on a composite score (satellite air quality, heat exposure, green space, and socioeconomic vulnerability). Lower scores = better environmental conditions.
-            </Text>
-          </View>
-        )}
-
-        {insightsTab === "search" && (
-          <View>
-            <TextInput
-              style={styles.insightsSearchInput}
-              placeholder="Type a neighborhood name (e.g. Englewood, Lincoln Park)"
-              placeholderTextColor="#9ca3af"
-              value={insightsSearch}
-              onChangeText={setInsightsSearch}
-            />
-            {insightsSearch.length > 0 ? (
-              insightSearchMatches.length === 0 ? (
-                <Text style={styles.bodyText}>No matches for "{insightsSearch}"</Text>
-              ) : (
-                insightSearchMatches.map((area) => {
-                  const score = getDisplayRiskScore(area);
-                  const rank = ranked.findIndex((a) => getCommunity(a) === getCommunity(area)) + 1;
-                  return (
-                    <Pressable
-                      key={getCommunity(area)}
-                      onPress={() => handleTopNeighborhoodClick(getCommunity(area))}
-                      style={({ pressed }) => [styles.searchResultCard, pressed && { opacity: 0.6 }]}
-                    >
-                      <View style={styles.searchResultHeader}>
-                        <Text style={styles.searchResultName}>{getCommunity(area)}</Text>
-                        <Text style={[styles.searchResultScore, { color: getMetricColor(score) }]}>
-                          {score.toFixed(1)}
-                        </Text>
-                      </View>
-                      <Text style={styles.searchResultMeta}>
-                        Ranked #{rank} of {ranked.length} · {getRiskLevel(score)} · Tap for full details
-                      </Text>
-                      <View style={styles.searchResultStats}>
-                        <View style={styles.searchStat}>
-                          <Text style={styles.searchStatLabel}>Air Pollution</Text>
-                          <Text style={styles.searchStatValue}>{getSatelliteAirPollutionScore(area).toFixed(0)}</Text>
-                        </View>
-                        <View style={styles.searchStat}>
-                          <Text style={styles.searchStatLabel}>Heat</Text>
-                          <Text style={styles.searchStatValue}>{getHeatRisk(area).toFixed(0)}</Text>
-                        </View>
-                        <View style={styles.searchStat}>
-                          <Text style={styles.searchStatLabel}>Green Space</Text>
-                          <Text style={styles.searchStatValue}>{getGreenRisk(area).toFixed(0)}</Text>
-                        </View>
-                        {Number.isFinite(getPoverty(area)) && (
-                          <View style={styles.searchStat}>
-                            <Text style={styles.searchStatLabel}>Poverty</Text>
-                            <Text style={styles.searchStatValue}>{getPoverty(area).toFixed(0)}%</Text>
-                          </View>
-                        )}
-                      </View>
-                    </Pressable>
-                  );
-                })
-              )
-            ) : (
-              <Text style={styles.insightCaption}>Start typing to find a neighborhood and see its environmental and socioeconomic snapshot.</Text>
-            )}
-          </View>
-        )}
-
-        {insightsTab === "health" && (
-          <View>
-            <Text style={styles.bodyText}>
-              Health and socioeconomic patterns across high-risk vs low-risk neighborhoods:
-            </Text>
-            <View style={styles.healthCompareGrid}>
-              <View style={styles.healthCompareHeader}>
-                <Text style={[styles.healthCell, styles.healthCellHeader]}>Indicator</Text>
-                <Text style={[styles.healthCell, styles.healthCellHeader, { color: "#c62828" }]}>High Risk</Text>
-                <Text style={[styles.healthCell, styles.healthCellHeader, { color: "#2e7d32" }]}>Low Risk</Text>
-              </View>
-              <HealthCompareRow label="Avg Poverty Rate" high={`${highPoverty.toFixed(1)}%`} low={`${lowPoverty.toFixed(1)}%`} />
-              <HealthCompareRow label="Avg Unemployment" high={`${highUnemp.toFixed(1)}%`} low={`${lowUnemp.toFixed(1)}%`} />
-              <HealthCompareRow label="Avg Income" high={`$${Math.round(highIncome).toLocaleString()}`} low={`$${Math.round(lowIncome).toLocaleString()}`} />
-              <HealthCompareRow label="# Areas" high={highRiskAreas.length.toString()} low={lowRiskAreas.length.toString()} />
-            </View>
-            <Text style={styles.insightCaption}>
-              People in high-risk environmental areas typically face more poverty, higher unemployment, and lower incomes — a pattern of environmental injustice that EPA recognizes nationally.
-            </Text>
-          </View>
-        )}
-
-        {insightsTab === "ej" && (
-          <View>
-            <Text style={styles.bodyText}>
-              Environmental justice analysis: are pollution burdens distributed fairly?
-            </Text>
-            <View style={styles.ejStatRow}>
-              <Text style={styles.ejStatValue}>{highPovHighRisk}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.ejStatLabel}>High-poverty + High-risk neighborhoods</Text>
-                <Text style={styles.ejStatDetail}>Areas where 20%+ live in poverty AND face elevated environmental risk</Text>
-              </View>
-            </View>
-            <View style={styles.ejStatRow}>
-              <Text style={[styles.ejStatValue, { color: "#2e7d32" }]}>{lowPovLowRisk}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.ejStatLabel}>Affluent + Clean neighborhoods</Text>
-                <Text style={styles.ejStatDetail}>Areas with under 10% poverty AND low environmental risk</Text>
-              </View>
-            </View>
-            <View style={styles.ejHighlight}>
-              <Text style={styles.ejHighlightLabel}>Poverty Gap</Text>
-              <Text style={styles.ejHighlightValue}>{povertyGap.toFixed(1)} percentage points</Text>
-              <Text style={styles.ejHighlightDetail}>
-                Average poverty rate in the 10 most polluted neighborhoods ({top10AvgPoverty.toFixed(1)}%) vs the 10 cleanest ({bottom10AvgPoverty.toFixed(1)}%).
-              </Text>
-            </View>
-            <Text style={styles.insightCaption}>
-              A large poverty gap suggests environmental burdens fall disproportionately on lower-income communities — the core of environmental justice concerns.
-            </Text>
-          </View>
-        )}
-      </View>
-
-      <View style={styles.card}>
-        <View style={styles.compareHeader}>
-          <Text style={styles.cardTitle}>Methodology & Data Sources</Text>
-          <Pressable onPress={() => setShowMethodology(!showMethodology)} style={styles.toggleButtonSmall}>
-            <Text style={styles.toggleButtonTextSmall}>{showMethodology ? "Hide" : "Show"}</Text>
-          </Pressable>
-        </View>
-        <Text style={styles.formula}>
-          Display Risk Score = 70% Original Risk + 10% Air Pollution + 10% Heat + 10% Green Space
-        </Text>
-        {showMethodology && (
-          <>
-            <DataSource title="Sentinel-2/5P, Landsat 8, MERRA-2" detail="Satellite via Google Earth Engine" />
-            <DataSource title="EPA AirNow" detail="Hourly ground sensors" />
-            <DataSource title="EPA Toxic Release Inventory" detail="Facility-level chemical reporting" />
-            <DataSource title="EPA Superfund NPL" detail="Contaminated sites requiring federal cleanup" />
-            <DataSource title="Chicago Public Health Statistics" detail="data.cityofchicago.org (iqnk-2tcu)" />
-            <DataSource title="Open-Meteo" detail="Weather + forecast (free, no API key)" />
-            <DataSource title="Esri World Imagery" detail="Satellite basemap" />
-            <DataSource title="OpenStreetMap Nominatim" detail="Address geocoding" />
-          </>
-        )}
-      </View>
-
-      <Text style={styles.footer}>
+      <Text style={sharedStyles.footer}>
         EnviroSight Chicago · Satellite · EPA · Chicago Data Portal · Open-Meteo · OpenStreetMap
       </Text>
-      <Text style={styles.copyright}>
+      <Text style={sharedStyles.copyright}>
         © {new Date().getFullYear()} EnviroSight Chicago. All rights reserved.
       </Text>
-      <View style={{ height: 40 }} />
     </ScrollView>
-  );
-}
-
-function KpiCard({ title, value, accent }: { title: string; value: string; accent: string }) {
-  return (
-    <View style={styles.kpiCard}>
-      <Text style={styles.kpiTitle}>{title}</Text>
-      <Text style={[styles.kpiValue, { color: accent }]}>{value}</Text>
-    </View>
   );
 }
 
@@ -1247,48 +838,6 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ComparisonHeader({ nameA, nameB }: { nameA: string; nameB: string }) {
-  return (
-    <View style={styles.compareHeaderRow}>
-      <Text style={[styles.compareCell, styles.compareCellHeader]}>Indicator</Text>
-      <Text style={[styles.compareCell, styles.compareCellHeader]} numberOfLines={1}>{nameA}</Text>
-      <Text style={[styles.compareCell, styles.compareCellHeader]} numberOfLines={1}>{nameB}</Text>
-    </View>
-  );
-}
-
-function ComparisonRow({ label, valueA, valueB }: { label: string; valueA: number; valueB: number }) {
-  const higher = valueA > valueB ? "A" : valueB > valueA ? "B" : "tie";
-  const safeA = Number.isFinite(valueA) ? valueA.toFixed(1) : "N/A";
-  const safeB = Number.isFinite(valueB) ? valueB.toFixed(1) : "N/A";
-  return (
-    <View style={styles.compareDataRow}>
-      <Text style={styles.compareCell}>{label}</Text>
-      <Text style={[styles.compareCell, styles.compareValue, { color: higher === "A" ? "#c62828" : "#374151", fontWeight: higher === "A" ? "900" : "600" }]}>{safeA}</Text>
-      <Text style={[styles.compareCell, styles.compareValue, { color: higher === "B" ? "#c62828" : "#374151", fontWeight: higher === "B" ? "900" : "600" }]}>{safeB}</Text>
-    </View>
-  );
-}
-
-function HealthCompareRow({ label, high, low }: { label: string; high: string; low: string }) {
-  return (
-    <View style={styles.healthCompareRow}>
-      <Text style={styles.healthCell}>{label}</Text>
-      <Text style={[styles.healthCell, styles.healthValue, { color: "#c62828" }]}>{high}</Text>
-      <Text style={[styles.healthCell, styles.healthValue, { color: "#2e7d32" }]}>{low}</Text>
-    </View>
-  );
-}
-
-function DataSource({ title, detail }: { title: string; detail: string }) {
-  return (
-    <View style={styles.sourceRow}>
-      <Text style={styles.sourceTitle}>{title}</Text>
-      <Text style={styles.sourceDetail}>{detail}</Text>
-    </View>
-  );
-}
-
 function QuickStat({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.quickStat}>
@@ -1299,183 +848,99 @@ function QuickStat({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#f6faf7" },
-  hero: { backgroundColor: "#075f43", padding: 34, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },
-  title: { color: "white", fontSize: 38, fontWeight: "800", marginBottom: 8, letterSpacing: -0.5 },
-  subtitle: { color: "#a7f3d0", fontSize: 18, fontWeight: "600", marginBottom: 12 },
-  description: { color: "rgba(255,255,255,0.92)", fontSize: 15, lineHeight: 22 },
   liveBanner: { backgroundColor: "white", margin: 20, marginBottom: 0, padding: 16, borderRadius: 14, borderLeftWidth: 4 },
   liveBannerRow: { flexDirection: "row", alignItems: "center", marginBottom: 4 },
   statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
   liveBannerTitle: { fontSize: 15, fontWeight: "800", color: "#111827" },
   liveBannerSubtext: { fontSize: 13, color: "#6b7280", marginLeft: 20 },
-  weatherCard: { marginHorizontal: 20, marginTop: 12, padding: 22, borderRadius: 18 },
-  weatherHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  weatherLocation: { color: "white", fontSize: 14, fontWeight: "800", letterSpacing: 0.5 },
-  weatherSource: { color: "rgba(255,255,255,0.6)", fontSize: 11, fontStyle: "italic" },
-  weatherMainRow: { flexDirection: "row", alignItems: "center", gap: 16, marginBottom: 20 },
-  weatherEmoji: { fontSize: 80 },
+
+  alertsCard: { margin: 20, marginBottom: 0, gap: 10 },
+  alertItem: { backgroundColor: "#fff7ed", padding: 14, borderRadius: 10, borderLeftWidth: 4 },
+  alertEvent: { fontSize: 13, fontWeight: "900", color: "#9a3412", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 },
+  alertHeadline: { fontSize: 14, fontWeight: "800", color: "#111827", marginBottom: 6, lineHeight: 19 },
+  alertInstruction: { fontSize: 13, color: "#374151", marginBottom: 6, lineHeight: 18 },
+  alertMeta: { fontSize: 11, color: "#9a3412", fontWeight: "700" },
+  weatherCard: { margin: 20, marginBottom: 0, padding: 18, borderRadius: 14 },
+  weatherHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
+  weatherLocation: { color: "white", fontSize: 15, fontWeight: "800" },
+  weatherSource: { color: "rgba(255,255,255,0.6)", fontSize: 11 },
+  weatherMainRow: { flexDirection: "row", alignItems: "center", marginTop: 6, marginBottom: 4 },
+  weatherEmoji: { fontSize: 80, marginRight: 12 },
   weatherMainText: { flex: 1 },
-  weatherTemp: { color: "white", fontSize: 56, fontWeight: "900", lineHeight: 58 },
-  weatherCondition: { color: "white", fontSize: 18, fontWeight: "700", marginTop: 4 },
-  weatherFeels: { color: "rgba(255,255,255,0.75)", fontSize: 13, marginTop: 4 },
-  weatherStatsRow: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginBottom: 20 },
-  weatherStat: { backgroundColor: "rgba(255,255,255,0.12)", padding: 12, borderRadius: 10, flexGrow: 1, flexBasis: 110, minWidth: 110 },
-  weatherStatLabel: { color: "rgba(255,255,255,0.7)", fontSize: 10, fontWeight: "800", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 4 },
-  weatherStatValue: { color: "white", fontSize: 15, fontWeight: "800" },
-  weatherForecastLabel: { color: "rgba(255,255,255,0.75)", fontSize: 11, fontWeight: "800", letterSpacing: 0.5, marginBottom: 10 },
-  forecastScroll: { marginHorizontal: -4 },
-  forecastDay: { backgroundColor: "rgba(255,255,255,0.12)", borderRadius: 12, padding: 12, marginHorizontal: 4, alignItems: "center", minWidth: 72 },
-  forecastDayName: { color: "rgba(255,255,255,0.85)", fontSize: 11, fontWeight: "800", marginBottom: 6 },
-  forecastEmoji: { fontSize: 28, marginBottom: 6 },
-  forecastTempHigh: { color: "white", fontSize: 16, fontWeight: "900" },
-  forecastTempLow: { color: "rgba(255,255,255,0.6)", fontSize: 13, fontWeight: "700" },
-  forecastPrecip: { color: "#7dd3fc", fontSize: 10, fontWeight: "700", marginTop: 4 },
-  sunRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.2)" },
+  weatherTemp: { color: "white", fontSize: 48, fontWeight: "900", lineHeight: 54 },
+  weatherCondition: { color: "white", fontSize: 18, fontWeight: "700" },
+  weatherFeels: { color: "rgba(255,255,255,0.7)", fontSize: 13, marginTop: 2 },
+  weatherStatsRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14 },
+  weatherStat: { flex: 1, minWidth: 90, backgroundColor: "rgba(255,255,255,0.12)", padding: 10, borderRadius: 8 },
+  weatherStatLabel: { color: "rgba(255,255,255,0.7)", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.4 },
+  weatherStatValue: { color: "white", fontSize: 15, fontWeight: "800", marginTop: 4 },
+  weatherForecastLabel: { color: "rgba(255,255,255,0.65)", fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.6, marginTop: 18, marginBottom: 6 },
+  forecastScroll: { marginBottom: 8 },
+  forecastDay: { backgroundColor: "rgba(255,255,255,0.10)", padding: 10, borderRadius: 12, marginRight: 8, minWidth: 78, alignItems: "center" },
+  forecastDayName: { color: "white", fontWeight: "800", fontSize: 12 },
+  forecastEmoji: { fontSize: 36, marginVertical: 4 },
+  forecastTempHigh: { color: "white", fontWeight: "900", fontSize: 16 },
+  forecastTempLow: { color: "rgba(255,255,255,0.6)", fontWeight: "700", fontSize: 13 },
+  forecastPrecip: { color: "#7dd3fc", fontSize: 10, fontWeight: "700", marginTop: 2 },
+  sunRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 6, paddingTop: 10, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.15)" },
   sunText: { color: "rgba(255,255,255,0.85)", fontSize: 12, fontWeight: "600" },
-  aqiBanner: { backgroundColor: "white", marginHorizontal: 20, marginTop: 12, padding: 18, borderRadius: 14, borderLeftWidth: 4 },
-  aqiHeader: { flexDirection: "row", alignItems: "flex-start", gap: 20 },
-  aqiLabel: { fontSize: 11, fontWeight: "800", color: "#6b7280", letterSpacing: 0.5, marginBottom: 4 },
-  aqiValue: { fontSize: 36, fontWeight: "900", lineHeight: 40 },
-  aqiCategory: { fontSize: 14, fontWeight: "700", color: "#374151", marginTop: 2 },
-  aqiParams: { gap: 4 },
-  aqiParamRow: { flexDirection: "row", justifyContent: "space-between", gap: 12, minWidth: 100 },
-  aqiParamName: { fontSize: 12, color: "#6b7280", fontWeight: "600" },
-  aqiParamValue: { fontSize: 14, fontWeight: "800", color: "#111827" },
-  aqiTimestamp: { fontSize: 11, color: "#9ca3af", marginTop: 10, fontStyle: "italic" },
-  kpiGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12, margin: 20 },
-  kpiCard: { flexGrow: 1, flexBasis: 140, backgroundColor: "white", padding: 18, borderRadius: 16, borderWidth: 1, borderColor: "#e5e7eb" },
-  kpiTitle: { fontSize: 12, color: "#6b7280", fontWeight: "700", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 },
-  kpiValue: { fontSize: 22, fontWeight: "900" },
-  addressInputRow: { flexDirection: "row", gap: 10, marginTop: 12 },
-  addressInput: { flex: 1, padding: 14, borderWidth: 1.5, borderColor: "#d1d5db", borderRadius: 12, backgroundColor: "white", fontSize: 16 },
-  addressSearchButton: { backgroundColor: "#075f43", paddingHorizontal: 22, justifyContent: "center", borderRadius: 12, minWidth: 90, alignItems: "center" },
+
+  search: { margin: 20, marginTop: 16, marginBottom: 0, padding: 14, borderRadius: 12, backgroundColor: "white", borderWidth: 1, borderColor: "#e5e7eb", fontSize: 14 },
+
+  addressInputRow: { flexDirection: "row", gap: 8 },
+  addressInput: { flex: 1, padding: 12, borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, backgroundColor: "#f9fafb", fontSize: 14 },
+  addressSearchButton: { backgroundColor: "#075f43", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, alignItems: "center", justifyContent: "center", minWidth: 80 },
   addressSearchButtonText: { color: "white", fontWeight: "800", fontSize: 14 },
-  addressActionRow: { flexDirection: "row", gap: 10, marginTop: 10, alignItems: "center" },
-  locationButton: { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 999, borderWidth: 1.5, borderColor: "#075f43", backgroundColor: "white" },
+  addressActionRow: { flexDirection: "row", gap: 8, marginTop: 10 },
+  locationButton: { flex: 1, backgroundColor: "#eef8f2", paddingVertical: 10, borderRadius: 10, alignItems: "center", borderWidth: 1, borderColor: "#075f43" },
   locationButtonText: { color: "#075f43", fontWeight: "800", fontSize: 13 },
-  clearButton: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 999, backgroundColor: "#f3f4f6" },
+  clearButton: { backgroundColor: "#f3f4f6", paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10, alignItems: "center" },
   clearButtonText: { color: "#6b7280", fontWeight: "700", fontSize: 13 },
-  errorText: { color: "#c62828", fontSize: 13, marginTop: 10, fontWeight: "600" },
-  pinResult: { marginTop: 16, padding: 16, backgroundColor: "#f7fbf8", borderRadius: 12, borderLeftWidth: 3, borderLeftColor: "#075f43" },
-  pinResultLabel: { fontSize: 13, color: "#6b7280", fontWeight: "700", marginBottom: 4 },
-  pinResultName: { fontSize: 22, fontWeight: "900", color: "#075f43", marginBottom: 8 },
-  pinQuickStats: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
-  quickStat: { backgroundColor: "white", padding: 10, borderRadius: 10, flexGrow: 1, flexBasis: 100, borderWidth: 1, borderColor: "#e5e7eb" },
-  quickStatLabel: { fontSize: 10, color: "#6b7280", fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 2 },
-  quickStatValue: { fontSize: 16, fontWeight: "900", color: "#111827" },
-  search: { marginHorizontal: 20, marginBottom: 20, padding: 14, borderWidth: 1.5, borderColor: "#075f43", borderRadius: 12, backgroundColor: "white", fontSize: 16 },
-  card: { backgroundColor: "white", marginHorizontal: 20, marginBottom: 20, padding: 22, borderRadius: 18, borderWidth: 1, borderColor: "#e5e7eb" },
-  mapCard: { backgroundColor: "white", marginHorizontal: 20, marginBottom: 20, padding: 22, borderRadius: 18, borderWidth: 1, borderColor: "#e5e7eb", overflow: "hidden" },
-  mapHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 12 },
-  cardTitle: { fontSize: 22, fontWeight: "800", color: "#075f43", marginBottom: 12 },
-  sectionTitle: { fontSize: 14, fontWeight: "800", color: "#075f43", marginTop: 18, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 },
-  bodyText: { fontSize: 14, lineHeight: 22, color: "#374151", marginBottom: 8 },
-  metricLabel: { fontSize: 11, fontWeight: "800", color: "#6b7280", letterSpacing: 0.5, marginBottom: 8, marginTop: 4 },
-  colorByRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
-  colorByButton: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: "#d1d5db", backgroundColor: "white" },
-  colorByButtonActive: { backgroundColor: "#075f43", borderColor: "#075f43" },
+  errorText: { color: "#c62828", fontSize: 13, marginTop: 8, fontWeight: "700" },
+
+  pinResult: { marginTop: 16, padding: 14, backgroundColor: "#eef8f2", borderRadius: 10, borderLeftWidth: 4, borderLeftColor: "#075f43" },
+  pinResultLabel: { fontWeight: "800", color: "#075f43", fontSize: 13, marginBottom: 4 },
+  pinResultName: { fontSize: 20, fontWeight: "900", color: "#111827", marginBottom: 8 },
+  pinQuickStats: { flexDirection: "row", gap: 10, marginTop: 12, flexWrap: "wrap" },
+  quickStat: { flex: 1, minWidth: 90, backgroundColor: "white", padding: 8, borderRadius: 8 },
+  quickStatLabel: { fontSize: 10, fontWeight: "700", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.4 },
+  quickStatValue: { fontSize: 14, fontWeight: "900", color: "#111827", marginTop: 2 },
+
+  scoreRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
+  bigScore: { fontSize: 36, fontWeight: "900" },
+  riskPill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999 },
+  riskPillText: { color: "white", fontWeight: "800", fontSize: 12 },
+  explainBox: { backgroundColor: "#f9fafb", padding: 12, borderRadius: 10, marginBottom: 14 },
+  explainText: { color: "#374151", fontSize: 13, lineHeight: 19 },
+  sectionTitle: { fontSize: 13, fontWeight: "800", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.6, marginTop: 14, marginBottom: 8 },
+
+  scoreBarWrapper: { marginTop: 8 },
+  scoreBarHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 4 },
+  scoreBarLabel: { fontWeight: "700", color: "#374151", fontSize: 13 },
+  scoreBarValue: { fontWeight: "900", fontSize: 13 },
+  scoreBarTrack: { height: 10, backgroundColor: "#f3f4f6", borderRadius: 999, overflow: "hidden" },
+  scoreBarFill: { height: "100%", borderRadius: 999 },
+
+  infoRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
+  infoLabel: { fontWeight: "600", color: "#6b7280", fontSize: 13 },
+  infoValue: { fontWeight: "800", color: "#111827", fontSize: 13 },
+
+  mapCard: { backgroundColor: "white", margin: 20, marginBottom: 0, padding: 16, borderRadius: 14 },
+  mapHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10, flexWrap: "wrap" },
+  metricLabel: { fontSize: 10, fontWeight: "800", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 },
+  colorByRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 12 },
+  colorByButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: "#f3f4f6" },
+  colorByButtonActive: { backgroundColor: "#075f43" },
   colorByButtonText: { color: "#374151", fontWeight: "700", fontSize: 12 },
   colorByButtonTextActive: { color: "white" },
-  basemapToggle: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, backgroundColor: "#111827" },
-  basemapToggleText: { color: "white", fontWeight: "800", fontSize: 13 },
-  scoreRow: { flexDirection: "row", alignItems: "center", gap: 16, marginBottom: 12 },
-  bigScore: { fontSize: 48, fontWeight: "900", lineHeight: 52 },
-  riskPill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999 },
-  riskPillText: { color: "white", fontWeight: "800", fontSize: 13 },
-  explainBox: { backgroundColor: "#f7fbf8", borderLeftWidth: 3, borderLeftColor: "#075f43", padding: 14, borderRadius: 10, marginBottom: 8 },
-  explainText: { fontSize: 14, lineHeight: 22, color: "#374151" },
-  formula: { fontSize: 14, fontWeight: "700", color: "#075f43", backgroundColor: "#eef8f2", padding: 14, borderRadius: 12, marginBottom: 12, lineHeight: 22 },
-  chartRow: { flexDirection: "row", alignItems: "center", marginTop: 8, gap: 8 },
-  chartRowPressable: { flexDirection: "row", alignItems: "center", marginTop: 8, gap: 8, paddingVertical: 6, paddingHorizontal: 6, borderRadius: 8 },
-  chartRank: { width: 30, fontWeight: "800", color: "#9ca3af", fontSize: 13 },
-  chartName: { width: 140, fontWeight: "700", color: "#111827", fontSize: 13 },
-  chartBarContainer: { flex: 1, height: 24, backgroundColor: "#f3f4f6", borderRadius: 6, overflow: "hidden", justifyContent: "center", position: "relative" },
-  chartBar: { position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 6 },
-  chartScore: { position: "absolute", right: 8, fontWeight: "900", color: "#111827", fontSize: 12 },
-  superfundRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  superfundRowPressable: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, paddingHorizontal: 6, borderBottomWidth: 1, borderBottomColor: "#f3f4f6", borderRadius: 6 },
-  superfundDot: { width: 10, height: 10, borderRadius: 5, flexShrink: 0 },
-  superfundName: { fontWeight: "700", color: "#111827", fontSize: 13 },
-  superfundStatus: { color: "#6b7280", fontSize: 12, marginTop: 2 },
-  compareHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  toggleGroup: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
+
+  toggleGroup: { flexDirection: "row", gap: 6, flexWrap: "wrap" },
+  basemapToggle: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: "#075f43", backgroundColor: "white" },
+  basemapToggleText: { color: "#075f43", fontWeight: "800", fontSize: 12 },
   toggleButton: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: "#075f43", backgroundColor: "white" },
   toggleButtonActive: { backgroundColor: "#075f43", borderColor: "#075f43" },
   toggleButtonActiveTri: { backgroundColor: "#6b2e8c", borderColor: "#6b2e8c" },
   toggleButtonActiveSuperfund: { backgroundColor: "#c62828", borderColor: "#c62828" },
   toggleButtonText: { color: "#075f43", fontWeight: "800", fontSize: 12 },
   toggleButtonTextActive: { color: "white" },
-  toggleButtonSmall: { backgroundColor: "#075f43", paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999 },
-  toggleButtonTextSmall: { color: "white", fontWeight: "800", fontSize: 12 },
-  compareInputs: { gap: 10, marginTop: 12, marginBottom: 16 },
-  compareInput: { padding: 12, borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, backgroundColor: "#f9fafb", fontSize: 14 },
-  compareGrid: { borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 12, overflow: "hidden" },
-  compareHeaderRow: { flexDirection: "row", backgroundColor: "#eef8f2", paddingVertical: 10 },
-  compareDataRow: { flexDirection: "row", borderTopWidth: 1, borderTopColor: "#e5e7eb", paddingVertical: 10 },
-  compareCell: { flex: 1, paddingHorizontal: 10, fontSize: 13, color: "#374151" },
-  compareCellHeader: { fontWeight: "800", color: "#075f43", textTransform: "uppercase", fontSize: 11, letterSpacing: 0.5 },
-  compareValue: { textAlign: "right", fontVariant: ["tabular-nums"] },
-  filterRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8, marginBottom: 12 },
-  filterButton: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: "#075f43", backgroundColor: "white" },
-  filterButtonActive: { backgroundColor: "#075f43" },
-  filterButtonText: { color: "#075f43", fontWeight: "800", fontSize: 13 },
-  filterButtonTextActive: { color: "white" },
-  rankingRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  colorIndicator: { width: 6, height: 36, borderRadius: 3 },
-  rankingName: { fontWeight: "700", color: "#111827", fontSize: 14 },
-  riskLevelSmall: { color: "#6b7280", fontSize: 12, marginTop: 2 },
-  rankingScore: { fontWeight: "900", fontSize: 18 },
-  scoreBarWrapper: { marginTop: 12 },
-  scoreBarHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
-  scoreBarLabel: { fontWeight: "700", color: "#374151", fontSize: 13 },
-  scoreBarValue: { fontWeight: "900", fontSize: 13 },
-  scoreBarTrack: { height: 10, backgroundColor: "#f3f4f6", borderRadius: 999, overflow: "hidden" },
-  scoreBarFill: { height: "100%", borderRadius: 999 },
-  infoRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  infoLabel: { fontWeight: "600", color: "#6b7280", fontSize: 13 },
-  infoValue: { fontWeight: "800", color: "#111827", fontSize: 13 },
-  sourceRow: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  sourceTitle: { fontSize: 14, fontWeight: "800", color: "#075f43" },
-  sourceDetail: { fontSize: 12, color: "#6b7280", marginTop: 2 },
-  footer: { textAlign: "center", color: "#9ca3af", fontSize: 12, marginTop: 8, paddingHorizontal: 20 },
-  copyright: { textAlign: "center", color: "#9ca3af", fontSize: 11, marginTop: 6, paddingHorizontal: 20 },
-  insightsHeader: { marginBottom: 16 },
-  insightsTabRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
-  insightsTab: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: "#d1d5db", backgroundColor: "white" },
-  insightsTabActive: { backgroundColor: "#075f43", borderColor: "#075f43" },
-  insightsTabText: { fontSize: 12, fontWeight: "700", color: "#374151" },
-  insightsTabTextActive: { color: "white" },
-  insightCaption: { fontSize: 12, color: "#6b7280", fontStyle: "italic", marginTop: 14, lineHeight: 18 },
-  distRow: { flexDirection: "row", gap: 10, marginTop: 12, marginBottom: 14, flexWrap: "wrap" },
-  distCard: { flexGrow: 1, flexBasis: 90, backgroundColor: "#f9fafb", borderRadius: 12, padding: 14, alignItems: "center", borderWidth: 1, borderColor: "#e5e7eb" },
-  distValue: { fontSize: 32, fontWeight: "900", lineHeight: 34 },
-  distLabel: { fontSize: 12, fontWeight: "800", color: "#111827", marginTop: 4 },
-  distSubtext: { fontSize: 11, color: "#6b7280", marginTop: 2 },
-  distBarTrack: { flexDirection: "row", height: 14, borderRadius: 999, overflow: "hidden", backgroundColor: "#f3f4f6" },
-  distBarSeg: { height: "100%" },
-  insightsSearchInput: { padding: 12, borderWidth: 1.5, borderColor: "#075f43", borderRadius: 10, backgroundColor: "white", fontSize: 14, marginBottom: 12 },
-  searchResultCard: { backgroundColor: "#f7fbf8", padding: 14, borderRadius: 12, marginTop: 8, borderLeftWidth: 3, borderLeftColor: "#075f43" },
-  searchResultHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
-  searchResultName: { fontSize: 16, fontWeight: "800", color: "#111827", flex: 1 },
-  searchResultScore: { fontSize: 22, fontWeight: "900" },
-  searchResultMeta: { fontSize: 12, color: "#6b7280", marginBottom: 10 },
-  searchResultStats: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  searchStat: { backgroundColor: "white", padding: 8, borderRadius: 8, flexGrow: 1, flexBasis: 70, borderWidth: 1, borderColor: "#e5e7eb" },
-  searchStatLabel: { fontSize: 10, fontWeight: "700", color: "#6b7280", textTransform: "uppercase" },
-  searchStatValue: { fontSize: 14, fontWeight: "900", color: "#111827", marginTop: 2 },
-  healthCompareGrid: { borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 12, overflow: "hidden", marginTop: 8 },
-  healthCompareHeader: { flexDirection: "row", backgroundColor: "#eef8f2", paddingVertical: 10 },
-  healthCompareRow: { flexDirection: "row", borderTopWidth: 1, borderTopColor: "#e5e7eb", paddingVertical: 12 },
-  healthCell: { flex: 1, paddingHorizontal: 10, fontSize: 13, color: "#374151" },
-  healthCellHeader: { fontWeight: "800", textTransform: "uppercase", fontSize: 11, letterSpacing: 0.5 },
-  healthValue: { textAlign: "right", fontWeight: "800", fontVariant: ["tabular-nums"] },
-  ejStatRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
-  ejStatValue: { fontSize: 36, fontWeight: "900", color: "#c62828", minWidth: 50, textAlign: "center" },
-  ejStatLabel: { fontSize: 14, fontWeight: "800", color: "#111827", marginBottom: 2 },
-  ejStatDetail: { fontSize: 12, color: "#6b7280", lineHeight: 18 },
-  ejHighlight: { backgroundColor: "#fff8e1", borderLeftWidth: 4, borderLeftColor: "#fb8c00", padding: 14, borderRadius: 10, marginTop: 12 },
-  ejHighlightLabel: { fontSize: 11, fontWeight: "800", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 },
-  ejHighlightValue: { fontSize: 20, fontWeight: "900", color: "#c62828", marginBottom: 4 },
-  ejHighlightDetail: { fontSize: 12, color: "#374151", lineHeight: 18 },
 });

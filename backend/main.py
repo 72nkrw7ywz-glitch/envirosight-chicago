@@ -2,12 +2,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from dotenv import load_dotenv
 import json
 import time
 import os
 import ee
 import urllib.request
 import urllib.parse
+
+load_dotenv()
 
 app = FastAPI(title="EnviroSight Chicago API", version="1.6.0")
 
@@ -27,6 +30,18 @@ cached_geojson = None
 cached_at = 0
 
 AIRNOW_API_KEY = os.environ.get("AIRNOW_API_KEY", "679BF6FA-7F0D-4C63-BD5B-A556E7EEFCF9")
+AQS_EMAIL = os.environ.get("AQS_EMAIL", "")
+AQS_KEY = os.environ.get("AQS_KEY", "")
+COOK_COUNTY_FIPS = "031"
+IL_FIPS = "17"
+AQS_CACHE_SECONDS = 60 * 60 * 24
+aqs_cache = None
+aqs_cached_at = 0
+WEATHER_ALERTS_CACHE_SECONDS = 5 * 60
+weather_alerts_cache = None
+weather_alerts_cached_at = 0
+CHICAGO_NWS_ZONE = "ILZ014"
+NWS_USER_AGENT = "EnviroSight-Chicago/1.7 (sathaimoorthy.s@northeastern.edu)"
 AIRNOW_CACHE_SECONDS = 15 * 60
 CHICAGO_BBOX = "-88.0,41.6,-87.5,42.05"
 CHICAGO_LAT = 41.8781
@@ -689,9 +704,169 @@ def fetch_superfund_sites():
     return sites
 
 
-# ─── Open-Meteo Weather ───────────────────────────────────────────────────────
+# ─── EPA AQS (historical air pollution monitoring) ───────────────────────────
+
+AQS_PARAMS = {"PM25": "88101", "O3": "44201", "NO2": "42602", "SO2": "42401", "CO": "42101"}
 
 
+def _fetch_aqs_year(pollutant: str, code: str, year: int) -> tuple[str, int, list, str]:
+    """Fetch one (pollutant, year) slice from EPA AQS dailyData/byCounty."""
+    try:
+        params = {
+            "email": AQS_EMAIL, "key": AQS_KEY,
+            "param": code,
+            "bdate": f"{year}0101", "edate": f"{year}1231",
+            "state": IL_FIPS, "county": COOK_COUNTY_FIPS,
+        }
+        url = "https://aqs.epa.gov/data/api/dailyData/byCounty?" + urllib.parse.urlencode(params)
+        raw = http_get_json(url, timeout=90)
+        rows = raw.get("Data", []) or []
+        unit = rows[0].get("units_of_measure", "") if rows else ""
+        return pollutant, year, rows, unit
+    except Exception as e:
+        print(f"[AQS] {pollutant} {year} fetch failed: {e}")
+        return pollutant, year, [], ""
+
+
+def fetch_aqs_history(months_back: int = 24) -> dict:
+    """
+    Monthly mean concentrations of major pollutants for Cook County (IL) from EPA AQS.
+
+    EPA AQS dailyData/byCounty requires bdate/edate in the same calendar year, and AQS data
+    has a ~10-month publication lag. We fetch the last 3 calendar years in parallel.
+    """
+    if not AQS_EMAIL or not AQS_KEY:
+        return {"available": False, "message": "AQS credentials not configured. Set AQS_EMAIL and AQS_KEY in backend env."}
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    now = datetime.now(timezone.utc)
+    earliest_year = (now - timedelta(days=30 * months_back + 365)).year
+    years = list(range(earliest_year, now.year + 1))
+
+    # Fire all (pollutant, year) requests concurrently
+    monthly_by_pollutant: dict = {p: {} for p in AQS_PARAMS}
+    unit_by_pollutant: dict = {p: "" for p in AQS_PARAMS}
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [
+            pool.submit(_fetch_aqs_year, pollutant, code, year)
+            for pollutant, code in AQS_PARAMS.items()
+            for year in years
+        ]
+        for fut in as_completed(futures):
+            pollutant, _year, rows, unit = fut.result()
+            if unit and not unit_by_pollutant[pollutant]:
+                unit_by_pollutant[pollutant] = unit
+            for row in rows:
+                date_local = row.get("date_local", "")
+                if not date_local or len(date_local) < 7: continue
+                ym = date_local[:7]
+                val = row.get("arithmetic_mean")
+                if val is None: continue
+                try: monthly_by_pollutant[pollutant].setdefault(ym, []).append(float(val))
+                except Exception: pass
+
+    series: dict = {}
+    for pollutant, monthly in monthly_by_pollutant.items():
+        all_months = sorted(monthly.items())
+        all_months = all_months[-months_back:] if months_back > 0 else all_months
+        unit = unit_by_pollutant[pollutant]
+        series[pollutant] = [
+            {"month": ym, "mean": round(sum(v) / len(v), 3), "unit": unit, "n": len(v)}
+            for ym, v in all_months
+        ]
+
+    return {
+        "available": True,
+        "fetched_at_utc": datetime.now(timezone.utc).isoformat(),
+        "county": "Cook County, IL",
+        "months_back": months_back,
+        "series": series,
+        "source": "EPA Air Quality System (AQS) Daily Data",
+    }
+
+
+# ─── NWS Weather + Alerts ─────────────────────────────────────────────────────
+
+
+def _nws_get(url: str, timeout: int = 20):
+    req = urllib.request.Request(url, headers={"User-Agent": NWS_USER_AGENT, "Accept": "application/geo+json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _label_from_nws_short_forecast(short_forecast: str, is_day: bool) -> dict:
+    s = (short_forecast or "").lower()
+    if "thunder" in s and "severe" in s: return {"code": 99, "label": short_forecast, "emoji": "⛈️"}
+    if "thunder" in s: return {"code": 95, "label": short_forecast, "emoji": "⛈️"}
+    if "heavy snow" in s: return {"code": 75, "label": short_forecast, "emoji": "❄️"}
+    if "snow shower" in s: return {"code": 85, "label": short_forecast, "emoji": "🌨️"}
+    if "snow" in s: return {"code": 73, "label": short_forecast, "emoji": "❄️"}
+    if "freezing" in s: return {"code": 67, "label": short_forecast, "emoji": "🌨️"}
+    if "rain" in s and ("heavy" in s or "showers" in s): return {"code": 82, "label": short_forecast, "emoji": "🌧️"}
+    if "rain" in s and "light" in s: return {"code": 61, "label": short_forecast, "emoji": "🌦️"}
+    if "rain" in s: return {"code": 63, "label": short_forecast, "emoji": "🌧️"}
+    if "drizzle" in s: return {"code": 53, "label": short_forecast, "emoji": "🌦️"}
+    if "fog" in s: return {"code": 45, "label": short_forecast, "emoji": "🌫️"}
+    if "cloudy" in s and "partly" in s: return {"code": 2, "label": short_forecast, "emoji": "⛅"}
+    if "cloudy" in s: return {"code": 3, "label": short_forecast, "emoji": "☁️"}
+    if "overcast" in s: return {"code": 3, "label": short_forecast, "emoji": "☁️"}
+    if "sunny" in s or "clear" in s or "fair" in s: return {"code": 0, "label": short_forecast, "emoji": "☀️" if is_day else "🌙"}
+    return {"code": 0, "label": short_forecast or "Unknown", "emoji": "🌡️"}
+
+
+def _safe(d, *path, default=None):
+    cur = d
+    for p in path:
+        if cur is None: return default
+        try: cur = cur.get(p) if isinstance(cur, dict) else cur[p]
+        except Exception: return default
+    return default if cur is None else cur
+
+
+def _parse_wind_speed_mph(s: str):
+    if not s: return None
+    import re
+    nums = re.findall(r"\d+", s)
+    if not nums: return None
+    return float(nums[-1])
+
+
+def _wind_direction_to_deg(s: str):
+    if not s: return None
+    table = {"N":0,"NNE":22.5,"NE":45,"ENE":67.5,"E":90,"ESE":112.5,"SE":135,"SSE":157.5,
+             "S":180,"SSW":202.5,"SW":225,"WSW":247.5,"W":270,"WNW":292.5,"NW":315,"NNW":337.5}
+    return table.get(s.upper())
+
+
+def fetch_weather_alerts():
+    """Active NWS alerts for Chicago zone."""
+    try:
+        data = _nws_get(f"https://api.weather.gov/alerts/active/zone/{CHICAGO_NWS_ZONE}", timeout=15)
+        out = []
+        for feat in data.get("features", []) or []:
+            p = feat.get("properties", {}) or {}
+            out.append({
+                "id": feat.get("id", ""),
+                "event": p.get("event", ""),
+                "severity": p.get("severity", ""),
+                "urgency": p.get("urgency", ""),
+                "headline": p.get("headline", ""),
+                "description": (p.get("description", "") or "")[:600],
+                "instruction": (p.get("instruction", "") or "")[:400],
+                "sent": p.get("sent", ""),
+                "expires": p.get("expires", ""),
+                "sender_name": p.get("senderName", ""),
+            })
+        return out
+    except Exception as e:
+        print(f"[Weather] Alerts fetch failed: {e}")
+        return []
+
+
+# WMO_WEATHER and weather_label_emoji are no longer used (NWS provides text descriptions)
+# but kept for any legacy callers.
 WMO_WEATHER = {
     0: ("Clear sky", "☀️"),
     1: ("Mainly clear", "🌤️"), 2: ("Partly cloudy", "⛅"), 3: ("Overcast", "☁️"),
@@ -714,46 +889,94 @@ def weather_label_emoji(code):
 
 
 def fetch_weather():
-    forecast_url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={CHICAGO_LAT}&longitude={CHICAGO_LNG}"
-        "&current=temperature_2m,apparent_temperature,is_day,relative_humidity_2m,"
-        "precipitation,weather_code,wind_speed_10m,wind_direction_10m,uv_index"
-        "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
-        "sunrise,sunset,precipitation_probability_max,wind_speed_10m_max,uv_index_max"
-        "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch"
-        "&forecast_days=7&timezone=America%2FChicago"
-    )
-    data = http_get_json(forecast_url, timeout=20)
-    cur = data.get("current", {}) or {}
-    daily = data.get("daily", {}) or {}
+    """
+    NWS forecast — official US National Weather Service. No API key.
+    Two-step fetch: /points → forecast URL + station list → forecast + latest obs.
+    Returns the same shape as the previous Open-Meteo response plus an alerts array.
+    """
+    points = _nws_get(f"https://api.weather.gov/points/{CHICAGO_LAT},{CHICAGO_LNG}")
+    pp = points.get("properties", {}) or {}
+    forecast_url = pp.get("forecast")
+    stations_url = pp.get("observationStations")
+    if not forecast_url:
+        raise RuntimeError("NWS /points missing forecast URL")
+
+    forecast = _nws_get(forecast_url)
+    periods = (forecast.get("properties", {}) or {}).get("periods", []) or []
 
     current = {
-        "time": cur.get("time", ""),
-        "temperature_f": cur.get("temperature_2m"),
-        "feels_like_f": cur.get("apparent_temperature"),
-        "humidity_pct": cur.get("relative_humidity_2m"),
-        "precipitation_in": cur.get("precipitation"),
-        "wind_speed_mph": cur.get("wind_speed_10m"),
-        "wind_direction_deg": cur.get("wind_direction_10m"),
-        "uv_index": cur.get("uv_index"),
-        "is_day": bool(cur.get("is_day")),
-        "weather": weather_label_emoji(cur.get("weather_code", 0)),
+        "time": "", "temperature_f": None, "feels_like_f": None,
+        "humidity_pct": None, "precipitation_in": 0.0,
+        "wind_speed_mph": None, "wind_direction_deg": None,
+        "uv_index": None, "is_day": True,
+        "weather": {"code": 0, "label": "Unknown", "emoji": "🌡️"},
     }
+    try:
+        stations = _nws_get(stations_url) if stations_url else {}
+        first_station = (stations.get("features") or [{}])[0]
+        st_id = (first_station.get("properties") or {}).get("stationIdentifier")
+        if st_id:
+            obs = _nws_get(f"https://api.weather.gov/stations/{st_id}/observations/latest")
+            op = obs.get("properties", {}) or {}
+            temp_c = _safe(op, "temperature", "value")
+            hum = _safe(op, "relativeHumidity", "value")
+            wind_ms = _safe(op, "windSpeed", "value")
+            wind_dir = _safe(op, "windDirection", "value")
+            heat_c = _safe(op, "heatIndex", "value")
+            wind_chill_c = _safe(op, "windChill", "value")
+            precip_mm = _safe(op, "precipitationLastHour", "value") or 0.0
+            description = op.get("textDescription", "") or ""
+            current["time"] = op.get("timestamp", "") or ""
+            current["temperature_f"] = round(temp_c * 9 / 5 + 32, 1) if temp_c is not None else None
+            feels_c = heat_c if heat_c is not None else wind_chill_c if wind_chill_c is not None else temp_c
+            current["feels_like_f"] = round(feels_c * 9 / 5 + 32, 1) if feels_c is not None else current["temperature_f"]
+            current["humidity_pct"] = round(hum, 0) if hum is not None else None
+            current["wind_speed_mph"] = round(wind_ms * 2.23694, 1) if wind_ms is not None else None
+            current["wind_direction_deg"] = wind_dir
+            current["precipitation_in"] = round(precip_mm / 25.4, 2) if precip_mm else 0.0
+            is_day = periods[0].get("isDaytime", True) if periods else True
+            current["is_day"] = bool(is_day)
+            current["weather"] = _label_from_nws_short_forecast(description or (periods[0].get("shortForecast", "") if periods else ""), bool(is_day))
+    except Exception as e:
+        print(f"[Weather] NWS observation fetch failed: {e}")
+
+    if current["temperature_f"] is None and periods:
+        p0 = periods[0]
+        current["temperature_f"] = p0.get("temperature")
+        current["feels_like_f"] = p0.get("temperature")
+        current["wind_speed_mph"] = _parse_wind_speed_mph(p0.get("windSpeed", ""))
+        current["wind_direction_deg"] = _wind_direction_to_deg(p0.get("windDirection", ""))
+        current["is_day"] = bool(p0.get("isDaytime", True))
+        current["weather"] = _label_from_nws_short_forecast(p0.get("shortForecast", ""), current["is_day"])
+
+    by_date: dict = {}
+    for p in periods:
+        start = (p.get("startTime") or "")[:10]
+        if not start: continue
+        bucket = by_date.setdefault(start, {"date": start, "day": None, "night": None})
+        if p.get("isDaytime"): bucket["day"] = p
+        else: bucket["night"] = p
 
     days = []
-    times = daily.get("time", []) or []
-    for i, date_str in enumerate(times):
+    for date_str in sorted(by_date.keys())[:7]:
+        bucket = by_date[date_str]
+        day = bucket["day"] or bucket["night"] or {}
+        night = bucket["night"] or {}
+        if not day: continue
+        high = day.get("temperature")
+        low = night.get("temperature") if night else day.get("temperature")
+        wind_mph = _parse_wind_speed_mph(day.get("windSpeed", "")) or _parse_wind_speed_mph(night.get("windSpeed", ""))
+        precip_prob = _safe(day, "probabilityOfPrecipitation", "value") or _safe(night, "probabilityOfPrecipitation", "value") or 0
         days.append({
             "date": date_str,
-            "temp_max_f": daily.get("temperature_2m_max", [None] * len(times))[i],
-            "temp_min_f": daily.get("temperature_2m_min", [None] * len(times))[i],
-            "precip_prob_pct": daily.get("precipitation_probability_max", [None] * len(times))[i],
-            "wind_max_mph": daily.get("wind_speed_10m_max", [None] * len(times))[i],
-            "uv_max": daily.get("uv_index_max", [None] * len(times))[i],
-            "sunrise": daily.get("sunrise", [None] * len(times))[i],
-            "sunset": daily.get("sunset", [None] * len(times))[i],
-            "weather": weather_label_emoji(daily.get("weather_code", [0] * len(times))[i]),
+            "temp_max_f": high,
+            "temp_min_f": low,
+            "precip_prob_pct": precip_prob,
+            "wind_max_mph": wind_mph,
+            "uv_max": None,
+            "sunrise": None,
+            "sunset": None,
+            "weather": _label_from_nws_short_forecast(day.get("shortForecast", ""), True),
         })
 
     return {
@@ -762,7 +985,8 @@ def fetch_weather():
         "fetched_at_utc": datetime.now(timezone.utc).isoformat(),
         "current": current,
         "daily": days,
-        "source": "Open-Meteo",
+        "alerts": fetch_weather_alerts(),
+        "source": "NWS (api.weather.gov)",
     }
 
 
@@ -776,7 +1000,7 @@ def home():
             "/api/current-risk-map",
             "/api/airnow-summary", "/api/airnow-stations",
             "/api/tri-facilities", "/api/superfund-sites",
-            "/api/public-health", "/api/weather",
+            "/api/public-health", "/api/weather", "/api/aqs-history",
         ],
     }
 
@@ -814,6 +1038,11 @@ def refresh_cache():
     tri_cached_at = 0
     superfund_cache = None
     superfund_cached_at = 0
+    global aqs_cache, aqs_cached_at, weather_alerts_cache, weather_alerts_cached_at
+    aqs_cache = None
+    aqs_cached_at = 0
+    weather_alerts_cache = None
+    weather_alerts_cached_at = 0
     public_health_cache = None
     public_health_cached_at = 0
     weather_cache = None
@@ -953,4 +1182,26 @@ def api_weather():
         return data
     except Exception as error:
         print(f"[Weather] Fetch failed: {error}")
+        return {"available": False, "message": str(error)}
+
+
+@app.get("/api/aqs-history")
+def api_aqs_history(months: int = 12):
+    global aqs_cache, aqs_cached_at
+    now = time.time()
+    cache_key = f"m{months}"
+    if (
+        aqs_cache is not None
+        and aqs_cache.get("_cache_key") == cache_key
+        and now - aqs_cached_at < AQS_CACHE_SECONDS
+    ):
+        return aqs_cache
+    try:
+        data = fetch_aqs_history(months_back=max(1, min(60, months)))
+        data["_cache_key"] = cache_key
+        aqs_cache = data
+        aqs_cached_at = now
+        return data
+    except Exception as error:
+        print(f"[AQS] Fetch failed: {error}")
         return {"available": False, "message": str(error)}
