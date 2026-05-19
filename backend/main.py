@@ -41,10 +41,15 @@ TRI_CACHE_SECONDS = 60 * 60 * 24 * 7
 tri_cache = None
 tri_cached_at = 0
 
+SUPERFUND_CACHE_SECONDS = 60 * 60 * 24 * 7
+superfund_cache = None
+superfund_cached_at = 0
+
 PH_CACHE_SECONDS = 60 * 60 * 24 * 30
 public_health_cache = None
 public_health_cached_at = 0
 
+# Weather cache — 10 minutes
 WEATHER_CACHE_SECONDS = 10 * 60
 weather_cache = None
 weather_cached_at = 0
@@ -546,6 +551,147 @@ def fetch_tri_facilities():
     return facilities
 
 
+# ─── EPA Superfund (NPL + ER + curated MGP list) ──────────────────────────────
+
+def _arcgis_query(url: str, params: dict) -> list:
+    full = url + "?" + urllib.parse.urlencode(params)
+    return http_get_json(full, timeout=30).get("features", []) or []
+
+
+def _in_chicago_bbox(lat, lng) -> bool:
+    return lat is not None and lng is not None and 41.6 <= lat <= 42.05 and -88.0 <= lng <= -87.5
+
+
+def fetch_superfund_sites():
+    """
+    Combine three Superfund-related sources in the Chicago bbox:
+    - NPL (federally-designated Superfund) from EPA's EMEF/efpoints layer 0
+    - ER/Removal actions (CERCLA + OPA emergency-response cleanups) from myenv/myenvlayers layer 0
+    - Curated list of Peoples Gas Manufactured Gas Plant (MGP) sites not in EPA's public layers
+    Deduped by ID.
+    """
+    sites = []
+    seen = set()
+
+    # NPL — use pgm_sys_id as the canonical id (matches the curated list's id format)
+    try:
+        npl_feats = _arcgis_query(
+            "https://geopub.epa.gov/arcgis/rest/services/EMEF/efpoints/MapServer/0/query",
+            {
+                "where": "1=1",
+                "geometry": CHICAGO_BBOX,
+                "geometryType": "esriGeometryEnvelope",
+                "inSR": "4326",
+                "outFields": "pgm_sys_id,site_id,primary_name,location_address,city_name,postal_code,latitude,longitude,profile_url",
+                "returnGeometry": "false",
+                "outSR": "4326",
+                "f": "json",
+            },
+        )
+    except Exception as e:
+        print(f"[Superfund] NPL fetch failed: {e}")
+        npl_feats = []
+
+    for feat in npl_feats:
+        a = feat.get("attributes", {}) or {}
+        site_id = a.get("pgm_sys_id") or a.get("site_id")
+        if not site_id or site_id in seen:
+            continue
+        try:
+            lat = float(a["latitude"]) if a.get("latitude") is not None else None
+            lng = float(a["longitude"]) if a.get("longitude") is not None else None
+        except Exception:
+            continue
+        if not _in_chicago_bbox(lat, lng):
+            continue
+        seen.add(site_id)
+        sites.append({
+            "id": site_id,
+            "name": a.get("primary_name", "Unknown"),
+            "address": a.get("location_address", ""),
+            "city": a.get("city_name", ""),
+            "zip": a.get("postal_code", ""),
+            "status": "Final NPL",
+            "category": "Superfund (NPL)",
+            "latitude": lat,
+            "longitude": lng,
+            "profile_url": a.get("profile_url", ""),
+        })
+
+    # ER / Removal actions
+    try:
+        er_feats = _arcgis_query(
+            "https://geopub.epa.gov/arcgis/rest/services/myenv/myenvlayers/MapServer/0/query",
+            {
+                "where": "1=1",
+                "geometry": CHICAGO_BBOX,
+                "geometryType": "esriGeometryEnvelope",
+                "inSR": "4326",
+                "outFields": "SiteID,SiteName,Address1,City,State,ZIP,Latitude,Longitude,NPLStatus,IncidentCategory,ResponseType,ResponseAuthority,URL,CompletionDate",
+                "returnGeometry": "false",
+                "outSR": "4326",
+                "f": "json",
+            },
+        )
+    except Exception as e:
+        print(f"[Superfund] ER fetch failed: {e}")
+        er_feats = []
+
+    for feat in er_feats:
+        a = feat.get("attributes", {}) or {}
+        site_id = str(a.get("SiteID") or "")
+        if not site_id or site_id in seen:
+            continue
+        try:
+            lat = float(a["Latitude"]) if a.get("Latitude") is not None else None
+            lng = float(a["Longitude"]) if a.get("Longitude") is not None else None
+        except Exception:
+            continue
+        if not _in_chicago_bbox(lat, lng):
+            continue
+        seen.add(site_id)
+        is_complete = a.get("CompletionDate") is not None
+        sites.append({
+            "id": site_id,
+            "name": a.get("SiteName", "Unknown"),
+            "address": a.get("Address1", "") or "",
+            "city": a.get("City", "") or "",
+            "zip": a.get("ZIP", "") or "",
+            "status": "Completed" if is_complete else "Active",
+            "category": f"{a.get('IncidentCategory') or 'Removal Action'} ({a.get('ResponseAuthority') or 'CERCLA'})",
+            "latitude": lat,
+            "longitude": lng,
+            "profile_url": a.get("URL", "") or "",
+        })
+
+    # Curated supplement — Peoples Gas MGP sites and other locally-tracked Superfund sites
+    # not exposed by EPA's public ArcGIS layers
+    for curated in CHICAGO_SUPERFUND_SITES:
+        cid = curated.get("id")
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        status = curated.get("status", "")
+        category = "Manufactured Gas Plant" if "Non-NPL" in status else "Superfund (NPL)"
+        sites.append({
+            "id": cid,
+            "name": curated.get("name", "Unknown"),
+            "address": curated.get("address", ""),
+            "city": curated.get("city", "Chicago"),
+            "zip": curated.get("zip", ""),
+            "status": status,
+            "category": category,
+            "latitude": curated.get("latitude"),
+            "longitude": curated.get("longitude"),
+            "profile_url": curated.get("profile_url", ""),
+        })
+
+    return sites
+
+
+# ─── Open-Meteo Weather ───────────────────────────────────────────────────────
+
+
 WMO_WEATHER = {
     0: ("Clear sky", "☀️"),
     1: ("Mainly clear", "🌤️"), 2: ("Partly cloudy", "⛅"), 3: ("Overcast", "☁️"),
@@ -657,6 +803,7 @@ def refresh_cache():
     global cached_geojson, cached_at, airnow_stations_cache, airnow_stations_cached_at
     global airnow_summary_cache, airnow_summary_cached_at, tri_cache, tri_cached_at
     global public_health_cache, public_health_cached_at, weather_cache, weather_cached_at
+    global superfund_cache, superfund_cached_at
     cached_geojson = None
     cached_at = 0
     airnow_stations_cache = None
@@ -665,6 +812,8 @@ def refresh_cache():
     airnow_summary_cached_at = 0
     tri_cache = None
     tri_cached_at = 0
+    superfund_cache = None
+    superfund_cached_at = 0
     public_health_cache = None
     public_health_cached_at = 0
     weather_cache = None
@@ -759,12 +908,22 @@ def tri_facilities():
 
 @app.get("/api/superfund-sites")
 def superfund_sites():
-    return {
-        "available": True,
-        "site_count": len(CHICAGO_SUPERFUND_SITES),
-        "sites": CHICAGO_SUPERFUND_SITES,
-        "source": "EPA Superfund National Priorities List",
-    }
+    global superfund_cache, superfund_cached_at
+    now = time.time()
+    if superfund_cache is not None and now - superfund_cached_at < SUPERFUND_CACHE_SECONDS:
+        return superfund_cache
+    try:
+        data = fetch_superfund_sites()
+        result = {
+            "available": True, "fetched_at_utc": datetime.now(timezone.utc).isoformat(),
+            "site_count": len(data), "sites": data,
+            "source": "EPA Envirofacts (NPL + ER) + curated Chicago MGP sites",
+        }
+        superfund_cache = result
+        superfund_cached_at = now
+        return result
+    except Exception as error:
+        return {"available": False, "message": str(error), "sites": []}
 
 
 @app.get("/api/public-health")

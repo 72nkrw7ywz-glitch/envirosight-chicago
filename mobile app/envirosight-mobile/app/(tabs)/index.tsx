@@ -5,9 +5,9 @@ import {
 
 type FeatureProperties = { community?: string; COMMUNITY?: string; [key: string]: any };
 type GeoJsonFeature = { type: string; properties: FeatureProperties; geometry: any };
-type RiskFilter = "All" | "Low Risk" | "Medium Risk" | "High Risk";
 type ColorByMetric = "risk" | "poverty" | "income" | "unemployment" | "ses_vulnerability";
 type BasemapType = "street" | "satellite";
+type InsightsTab = "distribution" | "search" | "health" | "ej";
 
 type AirNowStation = {
   latitude: number; longitude: number; site_name: string; agency: string;
@@ -138,7 +138,6 @@ export default function HomeScreen() {
   const [locating, setLocating] = useState(false);
 
   const [search, setSearch] = useState("");
-  const [riskFilter, setRiskFilter] = useState<RiskFilter>("All");
   const [dataSource, setDataSource] = useState("Loading...");
   const [dataStatus, setDataStatus] = useState<"loading" | "live" | "backup" | "error">("loading");
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
@@ -147,6 +146,10 @@ export default function HomeScreen() {
   const [compareB, setCompareB] = useState("");
   const [showCompare, setShowCompare] = useState(false);
   const [showMethodology, setShowMethodology] = useState(false);
+  const [showSuperfundList, setShowSuperfundList] = useState(false);
+
+  const [insightsTab, setInsightsTab] = useState<InsightsTab>("distribution");
+  const [insightsSearch, setInsightsSearch] = useState("");
 
   useEffect(() => {
     (async function loadRiskMap() {
@@ -330,6 +333,20 @@ export default function HomeScreen() {
     setAddressQuery(""); setGeocodeError(null);
   };
 
+  const openSuperfundReport = (siteId: string) => {
+    const epaUrl = `https://cumulis.epa.gov/supercpad/SiteProfiles/index.cfm?fuseaction=second.scs&id=${siteId}`;
+    if (typeof window !== "undefined") {
+      window.open(epaUrl, "_blank");
+    }
+  };
+
+  const handleTopNeighborhoodClick = (name: string) => {
+    setSearch(name);
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
   const allNeighborhoods: FeatureProperties[] = geoData?.features?.map((f: GeoJsonFeature) => f.properties) || [];
   const ranked = useMemo(() => [...allNeighborhoods].sort((a, b) => getDisplayRiskScore(b) - getDisplayRiskScore(a)), [geoData]);
 
@@ -353,11 +370,6 @@ export default function HomeScreen() {
     if (isReversed) bin = 4 - bin;
     return [RISK_COLORS.veryLow, RISK_COLORS.low, RISK_COLORS.medium, RISK_COLORS.high, RISK_COLORS.veryHigh][bin];
   };
-
-  const filtered = useMemo(() => {
-    if (riskFilter === "All") return ranked;
-    return ranked.filter((item) => getRiskLevel(getDisplayRiskScore(item)) === riskFilter);
-  }, [ranked, riskFilter]);
 
   const selected = search.length > 0
     ? allNeighborhoods.find((item) => getCommunity(item).toLowerCase().includes(search.toLowerCase())) || null
@@ -582,6 +594,50 @@ export default function HomeScreen() {
     const icon = map[code] ?? `clear-${dn}`;
     return `${base}/${icon}.svg`;
   };
+
+  const lowCount = ranked.filter((a) => getDisplayRiskScore(a) < 40).length;
+  const medCount = ranked.filter((a) => {
+    const s = getDisplayRiskScore(a);
+    return s >= 40 && s < 70;
+  }).length;
+  const highCount = ranked.filter((a) => getDisplayRiskScore(a) >= 70).length;
+  const totalForDist = ranked.length || 1;
+  const lowPct = (lowCount / totalForDist) * 100;
+  const medPct = (medCount / totalForDist) * 100;
+  const highPct = (highCount / totalForDist) * 100;
+
+  const insightSearchMatches = insightsSearch.length > 0
+    ? ranked.filter((a) => getCommunity(a).toLowerCase().includes(insightsSearch.toLowerCase())).slice(0, 5)
+    : [];
+
+  const highRiskAreas = ranked.filter((a) => getDisplayRiskScore(a) >= 70);
+  const lowRiskAreas = ranked.filter((a) => getDisplayRiskScore(a) < 40);
+  const avgArr = (arr: any[], fn: (a: any) => number) => {
+    const vals = arr.map(fn).filter(Number.isFinite);
+    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : NaN;
+  };
+  const highPoverty = avgArr(highRiskAreas, getPoverty);
+  const lowPoverty = avgArr(lowRiskAreas, getPoverty);
+  const highUnemp = avgArr(highRiskAreas, getUnemployment);
+  const lowUnemp = avgArr(lowRiskAreas, getUnemployment);
+  const highIncome = avgArr(highRiskAreas, getIncome);
+  const lowIncome = avgArr(lowRiskAreas, getIncome);
+
+  const withData = ranked.filter((a) => Number.isFinite(getPoverty(a)));
+  const highPovHighRisk = withData.filter((a) => getPoverty(a) >= 20 && getDisplayRiskScore(a) >= 60).length;
+  const lowPovLowRisk = withData.filter((a) => getPoverty(a) < 10 && getDisplayRiskScore(a) < 40).length;
+  const sortedByRisk = [...withData].sort((a, b) => getDisplayRiskScore(b) - getDisplayRiskScore(a));
+  const top10AvgPoverty = (() => {
+    const top = sortedByRisk.slice(0, 10);
+    const vals = top.map(getPoverty).filter(Number.isFinite);
+    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+  })();
+  const bottom10AvgPoverty = (() => {
+    const bot = sortedByRisk.slice(-10);
+    const vals = bot.map(getPoverty).filter(Number.isFinite);
+    return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+  })();
+  const povertyGap = top10AvgPoverty - bottom10AvgPoverty;
 
   return (
     <ScrollView style={styles.page}>
@@ -869,34 +925,48 @@ export default function HomeScreen() {
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Top 10 Highest-Risk Neighborhoods</Text>
+        <Text style={styles.bodyText}>Tap a neighborhood to see its full details.</Text>
         {top10.map((item, i) => {
           const score = getDisplayRiskScore(item);
           const width = (score / top10Max) * 100;
           return (
-            <View key={getCommunity(item)} style={styles.chartRow}>
+            <Pressable
+              key={getCommunity(item)}
+              onPress={() => handleTopNeighborhoodClick(getCommunity(item))}
+              style={({ pressed }) => [styles.chartRowPressable, pressed && { opacity: 0.6 }]}
+            >
               <Text style={styles.chartRank}>#{i + 1}</Text>
               <Text style={styles.chartName} numberOfLines={1}>{getCommunity(item)}</Text>
               <View style={styles.chartBarContainer}>
                 <View style={[styles.chartBar, { width: `${width}%`, backgroundColor: getMetricColor(score) }]} />
                 <Text style={styles.chartScore}>{score.toFixed(1)}</Text>
               </View>
-            </View>
+            </Pressable>
           );
         })}
       </View>
 
       {superfundSites.length > 0 && (
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>☢ Superfund Sites ({superfundSites.length})</Text>
-          <Text style={styles.bodyText}>EPA-designated contaminated sites requiring cleanup in Chicago.</Text>
-          {superfundSites.map((s) => (
-            <View key={s.id} style={styles.superfundRow}>
+          <View style={styles.compareHeader}>
+            <Text style={styles.cardTitle}>☢ Superfund Sites ({superfundSites.length})</Text>
+            <Pressable onPress={() => setShowSuperfundList(!showSuperfundList)} style={styles.toggleButtonSmall}>
+              <Text style={styles.toggleButtonTextSmall}>{showSuperfundList ? "Hide" : "Show"}</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.bodyText}>EPA-designated contaminated sites requiring cleanup in Chicago. Tap a site to view EPA's full report.</Text>
+          {showSuperfundList && superfundSites.map((s) => (
+            <Pressable
+              key={s.id}
+              onPress={() => openSuperfundReport(s.id)}
+              style={({ pressed }) => [styles.superfundRowPressable, pressed && { opacity: 0.6 }]}
+            >
               <View style={[styles.superfundDot, { backgroundColor: s.status === "Final NPL" ? "#c62828" : "#fb8c00" }]} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.superfundName}>{s.name}</Text>
-                <Text style={styles.superfundStatus}>{s.status} · ZIP {s.zip}</Text>
+                <Text style={styles.superfundStatus}>{s.status} · ZIP {s.zip} · Tap for EPA report ↗</Text>
               </View>
-            </View>
+            </Pressable>
           ))}
         </View>
       )}
@@ -930,27 +1000,173 @@ export default function HomeScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>All 77 Community Areas</Text>
-        <View style={styles.filterRow}>
-          {(["All", "Low Risk", "Medium Risk", "High Risk"] as RiskFilter[]).map((f) => (
-            <Pressable key={f} onPress={() => setRiskFilter(f)} style={[styles.filterButton, riskFilter === f && styles.filterButtonActive]}>
-              <Text style={[styles.filterButtonText, riskFilter === f && styles.filterButtonTextActive]}>{f}</Text>
-            </Pressable>
-          ))}
+        <View style={styles.insightsHeader}>
+          <Text style={styles.cardTitle}>Chicago Insights</Text>
+          <View style={styles.insightsTabRow}>
+            {(["distribution", "search", "health", "ej"] as InsightsTab[]).map((tab) => (
+              <Pressable
+                key={tab}
+                onPress={() => setInsightsTab(tab)}
+                style={[styles.insightsTab, insightsTab === tab && styles.insightsTabActive]}
+              >
+                <Text style={[styles.insightsTabText, insightsTab === tab && styles.insightsTabTextActive]}>
+                  {tab === "distribution" && "📊 Distribution"}
+                  {tab === "search" && "🔍 Search"}
+                  {tab === "health" && "🏥 Health"}
+                  {tab === "ej" && "⚖️ Equity"}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
         </View>
-        {filtered.map((item, i) => {
-          const score = getDisplayRiskScore(item);
-          return (
-            <View key={getCommunity(item)} style={styles.rankingRow}>
-              <View style={[styles.colorIndicator, { backgroundColor: getMetricColor(score) }]} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rankingName}>{i + 1}. {getCommunity(item)}</Text>
-                <Text style={styles.riskLevelSmall}>{getRiskLevel(score)}</Text>
+
+        {insightsTab === "distribution" && (
+          <View>
+            <Text style={styles.bodyText}>
+              Of Chicago's {totalForDist} community areas, here's how environmental risk is distributed:
+            </Text>
+            <View style={styles.distRow}>
+              <View style={styles.distCard}>
+                <Text style={[styles.distValue, { color: "#2e7d32" }]}>{lowCount}</Text>
+                <Text style={styles.distLabel}>Low Risk</Text>
+                <Text style={styles.distSubtext}>{lowPct.toFixed(0)}% of areas</Text>
               </View>
-              <Text style={[styles.rankingScore, { color: getMetricColor(score) }]}>{score.toFixed(1)}</Text>
+              <View style={styles.distCard}>
+                <Text style={[styles.distValue, { color: "#fb8c00" }]}>{medCount}</Text>
+                <Text style={styles.distLabel}>Medium Risk</Text>
+                <Text style={styles.distSubtext}>{medPct.toFixed(0)}% of areas</Text>
+              </View>
+              <View style={styles.distCard}>
+                <Text style={[styles.distValue, { color: "#c62828" }]}>{highCount}</Text>
+                <Text style={styles.distLabel}>High Risk</Text>
+                <Text style={styles.distSubtext}>{highPct.toFixed(0)}% of areas</Text>
+              </View>
             </View>
-          );
-        })}
+            <View style={styles.distBarTrack}>
+              <View style={[styles.distBarSeg, { width: `${lowPct}%`, backgroundColor: "#2e7d32" }]} />
+              <View style={[styles.distBarSeg, { width: `${medPct}%`, backgroundColor: "#fb8c00" }]} />
+              <View style={[styles.distBarSeg, { width: `${highPct}%`, backgroundColor: "#c62828" }]} />
+            </View>
+            <Text style={styles.insightCaption}>
+              Risk levels are based on a composite score (satellite air quality, heat exposure, green space, and socioeconomic vulnerability). Lower scores = better environmental conditions.
+            </Text>
+          </View>
+        )}
+
+        {insightsTab === "search" && (
+          <View>
+            <TextInput
+              style={styles.insightsSearchInput}
+              placeholder="Type a neighborhood name (e.g. Englewood, Lincoln Park)"
+              placeholderTextColor="#9ca3af"
+              value={insightsSearch}
+              onChangeText={setInsightsSearch}
+            />
+            {insightsSearch.length > 0 ? (
+              insightSearchMatches.length === 0 ? (
+                <Text style={styles.bodyText}>No matches for "{insightsSearch}"</Text>
+              ) : (
+                insightSearchMatches.map((area) => {
+                  const score = getDisplayRiskScore(area);
+                  const rank = ranked.findIndex((a) => getCommunity(a) === getCommunity(area)) + 1;
+                  return (
+                    <Pressable
+                      key={getCommunity(area)}
+                      onPress={() => handleTopNeighborhoodClick(getCommunity(area))}
+                      style={({ pressed }) => [styles.searchResultCard, pressed && { opacity: 0.6 }]}
+                    >
+                      <View style={styles.searchResultHeader}>
+                        <Text style={styles.searchResultName}>{getCommunity(area)}</Text>
+                        <Text style={[styles.searchResultScore, { color: getMetricColor(score) }]}>
+                          {score.toFixed(1)}
+                        </Text>
+                      </View>
+                      <Text style={styles.searchResultMeta}>
+                        Ranked #{rank} of {ranked.length} · {getRiskLevel(score)} · Tap for full details
+                      </Text>
+                      <View style={styles.searchResultStats}>
+                        <View style={styles.searchStat}>
+                          <Text style={styles.searchStatLabel}>Air Pollution</Text>
+                          <Text style={styles.searchStatValue}>{getSatelliteAirPollutionScore(area).toFixed(0)}</Text>
+                        </View>
+                        <View style={styles.searchStat}>
+                          <Text style={styles.searchStatLabel}>Heat</Text>
+                          <Text style={styles.searchStatValue}>{getHeatRisk(area).toFixed(0)}</Text>
+                        </View>
+                        <View style={styles.searchStat}>
+                          <Text style={styles.searchStatLabel}>Green Space</Text>
+                          <Text style={styles.searchStatValue}>{getGreenRisk(area).toFixed(0)}</Text>
+                        </View>
+                        {Number.isFinite(getPoverty(area)) && (
+                          <View style={styles.searchStat}>
+                            <Text style={styles.searchStatLabel}>Poverty</Text>
+                            <Text style={styles.searchStatValue}>{getPoverty(area).toFixed(0)}%</Text>
+                          </View>
+                        )}
+                      </View>
+                    </Pressable>
+                  );
+                })
+              )
+            ) : (
+              <Text style={styles.insightCaption}>Start typing to find a neighborhood and see its environmental and socioeconomic snapshot.</Text>
+            )}
+          </View>
+        )}
+
+        {insightsTab === "health" && (
+          <View>
+            <Text style={styles.bodyText}>
+              Health and socioeconomic patterns across high-risk vs low-risk neighborhoods:
+            </Text>
+            <View style={styles.healthCompareGrid}>
+              <View style={styles.healthCompareHeader}>
+                <Text style={[styles.healthCell, styles.healthCellHeader]}>Indicator</Text>
+                <Text style={[styles.healthCell, styles.healthCellHeader, { color: "#c62828" }]}>High Risk</Text>
+                <Text style={[styles.healthCell, styles.healthCellHeader, { color: "#2e7d32" }]}>Low Risk</Text>
+              </View>
+              <HealthCompareRow label="Avg Poverty Rate" high={`${highPoverty.toFixed(1)}%`} low={`${lowPoverty.toFixed(1)}%`} />
+              <HealthCompareRow label="Avg Unemployment" high={`${highUnemp.toFixed(1)}%`} low={`${lowUnemp.toFixed(1)}%`} />
+              <HealthCompareRow label="Avg Income" high={`$${Math.round(highIncome).toLocaleString()}`} low={`$${Math.round(lowIncome).toLocaleString()}`} />
+              <HealthCompareRow label="# Areas" high={highRiskAreas.length.toString()} low={lowRiskAreas.length.toString()} />
+            </View>
+            <Text style={styles.insightCaption}>
+              People in high-risk environmental areas typically face more poverty, higher unemployment, and lower incomes — a pattern of environmental injustice that EPA recognizes nationally.
+            </Text>
+          </View>
+        )}
+
+        {insightsTab === "ej" && (
+          <View>
+            <Text style={styles.bodyText}>
+              Environmental justice analysis: are pollution burdens distributed fairly?
+            </Text>
+            <View style={styles.ejStatRow}>
+              <Text style={styles.ejStatValue}>{highPovHighRisk}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.ejStatLabel}>High-poverty + High-risk neighborhoods</Text>
+                <Text style={styles.ejStatDetail}>Areas where 20%+ live in poverty AND face elevated environmental risk</Text>
+              </View>
+            </View>
+            <View style={styles.ejStatRow}>
+              <Text style={[styles.ejStatValue, { color: "#2e7d32" }]}>{lowPovLowRisk}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.ejStatLabel}>Affluent + Clean neighborhoods</Text>
+                <Text style={styles.ejStatDetail}>Areas with under 10% poverty AND low environmental risk</Text>
+              </View>
+            </View>
+            <View style={styles.ejHighlight}>
+              <Text style={styles.ejHighlightLabel}>Poverty Gap</Text>
+              <Text style={styles.ejHighlightValue}>{povertyGap.toFixed(1)} percentage points</Text>
+              <Text style={styles.ejHighlightDetail}>
+                Average poverty rate in the 10 most polluted neighborhoods ({top10AvgPoverty.toFixed(1)}%) vs the 10 cleanest ({bottom10AvgPoverty.toFixed(1)}%).
+              </Text>
+            </View>
+            <Text style={styles.insightCaption}>
+              A large poverty gap suggests environmental burdens fall disproportionately on lower-income communities — the core of environmental justice concerns.
+            </Text>
+          </View>
+        )}
       </View>
 
       <View style={styles.card}>
@@ -979,6 +1195,9 @@ export default function HomeScreen() {
 
       <Text style={styles.footer}>
         EnviroSight Chicago · Satellite · EPA · Chicago Data Portal · Open-Meteo · OpenStreetMap
+      </Text>
+      <Text style={styles.copyright}>
+        © {new Date().getFullYear()} EnviroSight Chicago. All rights reserved.
       </Text>
       <View style={{ height: 40 }} />
     </ScrollView>
@@ -1047,6 +1266,16 @@ function ComparisonRow({ label, valueA, valueB }: { label: string; valueA: numbe
       <Text style={styles.compareCell}>{label}</Text>
       <Text style={[styles.compareCell, styles.compareValue, { color: higher === "A" ? "#c62828" : "#374151", fontWeight: higher === "A" ? "900" : "600" }]}>{safeA}</Text>
       <Text style={[styles.compareCell, styles.compareValue, { color: higher === "B" ? "#c62828" : "#374151", fontWeight: higher === "B" ? "900" : "600" }]}>{safeB}</Text>
+    </View>
+  );
+}
+
+function HealthCompareRow({ label, high, low }: { label: string; high: string; low: string }) {
+  return (
+    <View style={styles.healthCompareRow}>
+      <Text style={styles.healthCell}>{label}</Text>
+      <Text style={[styles.healthCell, styles.healthValue, { color: "#c62828" }]}>{high}</Text>
+      <Text style={[styles.healthCell, styles.healthValue, { color: "#2e7d32" }]}>{low}</Text>
     </View>
   );
 }
@@ -1158,12 +1387,14 @@ const styles = StyleSheet.create({
   explainText: { fontSize: 14, lineHeight: 22, color: "#374151" },
   formula: { fontSize: 14, fontWeight: "700", color: "#075f43", backgroundColor: "#eef8f2", padding: 14, borderRadius: 12, marginBottom: 12, lineHeight: 22 },
   chartRow: { flexDirection: "row", alignItems: "center", marginTop: 8, gap: 8 },
+  chartRowPressable: { flexDirection: "row", alignItems: "center", marginTop: 8, gap: 8, paddingVertical: 6, paddingHorizontal: 6, borderRadius: 8 },
   chartRank: { width: 30, fontWeight: "800", color: "#9ca3af", fontSize: 13 },
   chartName: { width: 140, fontWeight: "700", color: "#111827", fontSize: 13 },
   chartBarContainer: { flex: 1, height: 24, backgroundColor: "#f3f4f6", borderRadius: 6, overflow: "hidden", justifyContent: "center", position: "relative" },
   chartBar: { position: "absolute", left: 0, top: 0, bottom: 0, borderRadius: 6 },
   chartScore: { position: "absolute", right: 8, fontWeight: "900", color: "#111827", fontSize: 12 },
   superfundRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
+  superfundRowPressable: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, paddingHorizontal: 6, borderBottomWidth: 1, borderBottomColor: "#f3f4f6", borderRadius: 6 },
   superfundDot: { width: 10, height: 10, borderRadius: 5, flexShrink: 0 },
   superfundName: { fontWeight: "700", color: "#111827", fontSize: 13 },
   superfundStatus: { color: "#6b7280", fontSize: 12, marginTop: 2 },
@@ -1208,4 +1439,43 @@ const styles = StyleSheet.create({
   sourceTitle: { fontSize: 14, fontWeight: "800", color: "#075f43" },
   sourceDetail: { fontSize: 12, color: "#6b7280", marginTop: 2 },
   footer: { textAlign: "center", color: "#9ca3af", fontSize: 12, marginTop: 8, paddingHorizontal: 20 },
+  copyright: { textAlign: "center", color: "#9ca3af", fontSize: 11, marginTop: 6, paddingHorizontal: 20 },
+  insightsHeader: { marginBottom: 16 },
+  insightsTabRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 },
+  insightsTab: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: "#d1d5db", backgroundColor: "white" },
+  insightsTabActive: { backgroundColor: "#075f43", borderColor: "#075f43" },
+  insightsTabText: { fontSize: 12, fontWeight: "700", color: "#374151" },
+  insightsTabTextActive: { color: "white" },
+  insightCaption: { fontSize: 12, color: "#6b7280", fontStyle: "italic", marginTop: 14, lineHeight: 18 },
+  distRow: { flexDirection: "row", gap: 10, marginTop: 12, marginBottom: 14, flexWrap: "wrap" },
+  distCard: { flexGrow: 1, flexBasis: 90, backgroundColor: "#f9fafb", borderRadius: 12, padding: 14, alignItems: "center", borderWidth: 1, borderColor: "#e5e7eb" },
+  distValue: { fontSize: 32, fontWeight: "900", lineHeight: 34 },
+  distLabel: { fontSize: 12, fontWeight: "800", color: "#111827", marginTop: 4 },
+  distSubtext: { fontSize: 11, color: "#6b7280", marginTop: 2 },
+  distBarTrack: { flexDirection: "row", height: 14, borderRadius: 999, overflow: "hidden", backgroundColor: "#f3f4f6" },
+  distBarSeg: { height: "100%" },
+  insightsSearchInput: { padding: 12, borderWidth: 1.5, borderColor: "#075f43", borderRadius: 10, backgroundColor: "white", fontSize: 14, marginBottom: 12 },
+  searchResultCard: { backgroundColor: "#f7fbf8", padding: 14, borderRadius: 12, marginTop: 8, borderLeftWidth: 3, borderLeftColor: "#075f43" },
+  searchResultHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
+  searchResultName: { fontSize: 16, fontWeight: "800", color: "#111827", flex: 1 },
+  searchResultScore: { fontSize: 22, fontWeight: "900" },
+  searchResultMeta: { fontSize: 12, color: "#6b7280", marginBottom: 10 },
+  searchResultStats: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  searchStat: { backgroundColor: "white", padding: 8, borderRadius: 8, flexGrow: 1, flexBasis: 70, borderWidth: 1, borderColor: "#e5e7eb" },
+  searchStatLabel: { fontSize: 10, fontWeight: "700", color: "#6b7280", textTransform: "uppercase" },
+  searchStatValue: { fontSize: 14, fontWeight: "900", color: "#111827", marginTop: 2 },
+  healthCompareGrid: { borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 12, overflow: "hidden", marginTop: 8 },
+  healthCompareHeader: { flexDirection: "row", backgroundColor: "#eef8f2", paddingVertical: 10 },
+  healthCompareRow: { flexDirection: "row", borderTopWidth: 1, borderTopColor: "#e5e7eb", paddingVertical: 12 },
+  healthCell: { flex: 1, paddingHorizontal: 10, fontSize: 13, color: "#374151" },
+  healthCellHeader: { fontWeight: "800", textTransform: "uppercase", fontSize: 11, letterSpacing: 0.5 },
+  healthValue: { textAlign: "right", fontWeight: "800", fontVariant: ["tabular-nums"] },
+  ejStatRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#f3f4f6" },
+  ejStatValue: { fontSize: 36, fontWeight: "900", color: "#c62828", minWidth: 50, textAlign: "center" },
+  ejStatLabel: { fontSize: 14, fontWeight: "800", color: "#111827", marginBottom: 2 },
+  ejStatDetail: { fontSize: 12, color: "#6b7280", lineHeight: 18 },
+  ejHighlight: { backgroundColor: "#fff8e1", borderLeftWidth: 4, borderLeftColor: "#fb8c00", padding: 14, borderRadius: 10, marginTop: 12 },
+  ejHighlightLabel: { fontSize: 11, fontWeight: "800", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 },
+  ejHighlightValue: { fontSize: 20, fontWeight: "900", color: "#c62828", marginBottom: 4 },
+  ejHighlightDetail: { fontSize: 12, color: "#374151", lineHeight: 18 },
 });
