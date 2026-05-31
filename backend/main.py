@@ -30,8 +30,8 @@ cached_geojson = None
 cached_at = 0
 
 AIRNOW_API_KEY = os.environ.get("AIRNOW_API_KEY", "679BF6FA-7F0D-4C63-BD5B-A556E7EEFCF9")
-AQS_EMAIL = os.environ.get("AQS_EMAIL", "")
-AQS_KEY = os.environ.get("AQS_KEY", "")
+AQS_EMAIL = os.environ.get("AQS_EMAIL", "sathaimoorthy.s@northeastern.edu")
+AQS_KEY = os.environ.get("AQS_KEY", "tealheron78")
 COOK_COUNTY_FIPS = "031"
 IL_FIPS = "17"
 AQS_CACHE_SECONDS = 60 * 60 * 24
