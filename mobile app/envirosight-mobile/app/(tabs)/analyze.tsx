@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, TextInput, ScrollView, StyleSheet, Pressable } from "react-native";
 import {
   API_BASE,
@@ -87,6 +87,29 @@ export default function AnalyzeScreen() {
   const [insightsTab, setInsightsTab] = useState<InsightsTab>("distribution");
   const [insightsSearch, setInsightsSearch] = useState("");
   const [aqs, setAqs] = useState<AqsHistory | null>(null);
+  const [aqsWaking, setAqsWaking] = useState(false);
+  const [aqsError, setAqsError] = useState(false);
+
+  const loadAqs = useCallback(async () => {
+    setAqs(null);
+    setAqsError(false);
+    setAqsWaking(false);
+    const wakingTimer = setTimeout(() => setAqsWaking(true), 8000);
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), 90000);
+    try {
+      const res = await fetch(`${API_BASE}/api/aqs-history`, { signal: controller.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setAqs(await res.json());
+    } catch (err) {
+      console.warn("AQS fetch failed:", err);
+      setAqsError(true);
+    } finally {
+      clearTimeout(wakingTimer);
+      clearTimeout(abortTimer);
+      setAqsWaking(false);
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -96,14 +119,9 @@ export default function AnalyzeScreen() {
       } catch (err) {
         console.warn("Risk map fetch failed:", err);
       }
-      try {
-        const res = await fetch(`${API_BASE}/api/aqs-history`);
-        if (res.ok) setAqs(await res.json());
-      } catch (err) {
-        console.warn("AQS fetch failed:", err);
-      }
     })();
-  }, []);
+    loadAqs();
+  }, [loadAqs]);
 
   const all: FeatureProperties[] = geoData?.features?.map((f: GeoJsonFeature) => f.properties) || [];
   const ranked = useMemo(
@@ -202,7 +220,24 @@ export default function AnalyzeScreen() {
         <Text style={sharedStyles.cardSubtitle}>
           Monthly mean concentrations from EPA's Air Quality System (AQS) ground monitors over the last 12 months.
         </Text>
-        {!aqs && <Text style={sharedStyles.bodyText}>Loading EPA AQS data…</Text>}
+        {!aqs && !aqsError && (
+          <Text style={sharedStyles.bodyText}>
+            {aqsWaking
+              ? "Backend waking up — free tier cold-start, this can take up to a minute…"
+              : "Loading EPA AQS data…"}
+          </Text>
+        )}
+        {aqsError && (
+          <View style={styles.aqsUnavailable}>
+            <Text style={styles.aqsUnavailableText}>Couldn&apos;t reach the EPA AQS service.</Text>
+            <Text style={sharedStyles.cardSubtitle}>
+              The backend may still be waking up, or there&apos;s a network issue. Try again in a few seconds.
+            </Text>
+            <Pressable onPress={loadAqs} style={styles.aqsRetryBtn}>
+              <Text style={styles.aqsRetryText}>Retry</Text>
+            </Pressable>
+          </View>
+        )}
         {aqs && !aqs.available && (
           <View style={styles.aqsUnavailable}>
             <Text style={styles.aqsUnavailableText}>{aqs.message || "Not available"}</Text>
@@ -532,6 +567,8 @@ const createStyles = (t: ThemeTokens) => StyleSheet.create({
 
   aqsUnavailable: { padding: 14, backgroundColor: t.name === "dark" ? "#3a2c0a" : "#fef3c7", borderRadius: 10, borderLeftWidth: 4, borderLeftColor: t.warning },
   aqsUnavailableText: { fontWeight: "700", color: t.name === "dark" ? "#fcd34d" : "#92400e", marginBottom: 4 },
+  aqsRetryBtn: { backgroundColor: t.brand, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, alignSelf: "flex-start", marginTop: 10 },
+  aqsRetryText: { color: "#ffffff", fontWeight: "800", fontSize: 13 },
   aqsRow: { marginTop: 14 },
   aqsRowHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
   aqsPollutant: { fontWeight: "800", color: t.text, fontSize: 14 },
