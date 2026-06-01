@@ -264,7 +264,9 @@ export default function AnalyzeScreen() {
                       return (
                         <View key={p.month} style={styles.aqsBarColumn}>
                           <View style={[styles.aqsBar, { height: `${h}%` }]} />
-                          <Text style={styles.aqsMonth}>{p.month.slice(5)}</Text>
+                          <Text style={styles.aqsMonth}>
+                            {new Date(`${p.month}-01T00:00:00Z`).toLocaleString("en-US", { month: "short", timeZone: "UTC" })}
+                          </Text>
                         </View>
                       );
                     })}
